@@ -1,0 +1,17 @@
+[package]
+name = "omni-core"
+version = "0.1.0"
+edition = "2021"
+description = "Omni search engine core: hand-rolled inverted index, BM25, and a std-only HTTP server."
+
+# Phase 1 is intentionally zero-dependency: the whole point is to learn IR from
+# the metal, and a std-only build works offline. Dependencies (a real HTTP
+# crate, HTML parser, compression) get added deliberately in later phases.
+[dependencies]
+
+[[bin]]
+name = "omni"
+path = "src/main.rs"
+
+[profile.release]
+lto = true

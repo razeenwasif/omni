@@ -1,0 +1,131 @@
+//! A hot-swappable index for the running server, plus the background merger.
+//!
+//! The server loads the index once and serves it read-only, so on its own it
+//! never reclaims tombstones or rebalances segments that accumulate (e.g. when an
+//! index built with `--no-merge` is served, or after a future live-ingest path).
+//! `LiveIndex` makes the served index **swappable while requests are in flight**:
+//!
+//!   * Readers take a cheap `Arc<Index>` **snapshot** — the lock is held only long
+//!     enough to clone the `Arc`, never for the actual query — so a swap never
+//!     blocks `/search` and a `/search` never blocks the swap.
+//!   * The background merger builds a *new* index off a snapshot with
+//!     `Index::merged_view` (which **shares** the untouched segments via `Arc` and
+//!     only materializes the merged one) and then atomically replaces the pointer.
+//!     In-flight readers keep using the old index until they drop their snapshot;
+//!     it's freed when the last one finishes.
+//!
+//! This is the hand-rolled equivalent of an `arc-swap` cell — no external crate.
+//! Unmerged segment files that `save`'s orphan cleanup removes may still be
+//! memory-mapped by an old snapshot; on Linux unlinking a mapped file is safe (the
+//! mapping stays valid until dropped), which is why the swap and the on-disk
+//! cleanup can race harmlessly.
+
+use crate::index::Index;
+use crate::merge::MergePolicy;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
+/// A pointer to the current index that can be swapped atomically.
+pub struct LiveIndex {
+    inner: RwLock<Arc<Index>>,
+}
+
+impl LiveIndex {
+    pub fn new(index: Index) -> Arc<Self> {
+        Arc::new(LiveIndex {
+            inner: RwLock::new(Arc::new(index)),
+        })
+    }
+
+    /// The current index. The read lock is released immediately; callers run their
+    /// query against the returned `Arc`, not under the lock.
+    pub fn snapshot(&self) -> Arc<Index> {
+        Arc::clone(&self.inner.read().unwrap())
+    }
+
+    /// Atomically replace the current index.
+    pub fn swap(&self, next: Arc<Index>) {
+        *self.inner.write().unwrap() = next;
+    }
+}
+
+/// Persist `next` (if a dir is configured) and then atomically swap it in. The
+/// shared commit path for the background merger and the `/ingest` endpoint — saving
+/// before swapping keeps the on-disk index consistent with what's being served.
+pub fn commit(live: &LiveIndex, next: Index, dir: Option<&std::path::Path>) {
+    let next = Arc::new(next);
+    if let Some(d) = dir {
+        match crate::persist::save(&next, d) {
+            Ok(()) => {
+                let _ = crate::persist::save_ann(&next, d);
+            }
+            Err(e) => eprintln!("omni: commit save failed: {e}"),
+        }
+    }
+    live.swap(next);
+}
+
+/// Background-merge configuration.
+pub struct BgMerge {
+    /// How often to check whether a merge is warranted.
+    pub interval: Duration,
+    /// Tiered policy factor (a tier merges once it holds this many segments).
+    pub merge_factor: usize,
+    /// Index directory; when set, a live merge is also persisted so it survives a
+    /// restart. `None` ⇒ in-memory swap only.
+    pub dir: Option<PathBuf>,
+}
+
+/// Spawn the background merge thread. It wakes every `interval`, and if the tiered
+/// policy finds an over-full size tier, performs **one** merge step off a snapshot
+/// and swaps the result in (persisting first when a dir is configured). One step
+/// per wake bounds the work each cycle; an unbalanced index converges over several
+/// cycles. A balanced index does nothing but sleep.
+pub fn spawn_background_merger(live: Arc<LiveIndex>, cfg: BgMerge) {
+    std::thread::spawn(move || {
+        let policy = MergePolicy::new(cfg.merge_factor);
+        loop {
+            std::thread::sleep(cfg.interval);
+            let snap = live.snapshot();
+            let sizes: Vec<usize> = snap.segments().iter().map(|s| s.total_docs()).collect();
+            let Some(sel) = policy.pick(&sizes) else {
+                continue; // already balanced
+            };
+            if sel.len() < 2 {
+                continue;
+            }
+            let before = snap.segments().len();
+            let merged = snap.merged_view(&sel); // shares untouched segments
+            let after = merged.segments().len();
+            // Persist (durable) then atomically swap.
+            commit(&live, merged, cfg.dir.as_deref());
+            println!("omni: background merge {before} → {after} segment(s)");
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::Index;
+
+    #[test]
+    fn snapshot_survives_swap() {
+        let mut a = Index::new();
+        a.add_document("u".into(), "T".into(), "hello world");
+        let live = LiveIndex::new(a);
+
+        // A snapshot taken before the swap keeps seeing the old index.
+        let old = live.snapshot();
+        assert_eq!(old.doc_count(), 1);
+
+        let mut b = Index::new();
+        b.add_document("u".into(), "T".into(), "hello world");
+        b.add_document("v".into(), "T2".into(), "another document");
+        live.swap(Arc::new(b));
+
+        assert_eq!(old.doc_count(), 1, "old snapshot unchanged after swap");
+        assert_eq!(live.snapshot().doc_count(), 2, "new snapshot sees the swap");
+    }
+}

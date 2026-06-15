@@ -1,0 +1,55 @@
+# Omni academic crawl seeds.
+#
+# One seed URL per line ('#' starts a comment). The crawler's host allowlist
+# defaults to the hosts of these seeds, so the crawl stays within these domains —
+# add a line to widen it, delete one to narrow it. Pair with `-per-host` so no
+# single domain dominates. These are all static-HTML, crawl-friendly references.
+#
+# Run:  scripts/crawl-academic.sh            (uses this file)
+
+# --- encyclopedic / reference ---
+https://en.wikipedia.org/wiki/Mathematics
+https://en.wikipedia.org/wiki/Physics
+https://en.wikipedia.org/wiki/Computer_science
+https://en.wikipedia.org/wiki/Biology
+https://en.wikipedia.org/wiki/Chemistry
+https://en.wikipedia.org/wiki/Economics
+https://en.wikipedia.org/wiki/Statistics
+https://en.wikipedia.org/wiki/Algorithm
+https://en.wikipedia.org/wiki/Artificial_intelligence
+https://en.wikipedia.org/wiki/Philosophy
+https://en.wikipedia.org/wiki/Linguistics
+https://plato.stanford.edu/contents.html
+https://mathworld.wolfram.com/
+
+# --- preprints / papers ---
+https://arxiv.org/list/cs.LG/recent
+https://arxiv.org/list/cs.AI/recent
+https://arxiv.org/list/cs.CL/recent
+https://arxiv.org/list/cs.DS/recent
+https://arxiv.org/list/stat.ML/recent
+https://arxiv.org/list/math.AG/recent
+https://arxiv.org/list/physics.comp-ph/recent
+
+# --- open textbooks / courseware ---
+https://en.wikibooks.org/wiki/Subject:Mathematics
+https://en.wikibooks.org/wiki/Subject:Computing
+https://en.wikiversity.org/wiki/Portal:Science
+
+# --- math reference wikis ---
+https://proofwiki.org/wiki/Main_Page
+https://ncatlab.org/nlab/show/HomePage
+
+# --- programming / technical docs ---
+https://developer.mozilla.org/en-US/docs/Web
+https://doc.rust-lang.org/book/
+https://doc.rust-lang.org/std/
+https://docs.python.org/3/
+https://go.dev/doc/
+
+# --- "necessity" sites are NOT crawled here ---
+# YouTube, GitHub, Overleaf, Google Scholar are dynamic apps (JS/login), so
+# crawling them yields little. They're reached instead via Flux keyword
+# shortcuts + direct URL navigation — see scripts/register-flux.sh
+# (yt, gh, ol, scholar, wiki, arxiv). Add a host above only if you truly want
+# its pages indexed.
