@@ -71,6 +71,15 @@ is visible in real time. UI is vanilla JS/CSS baked into the binary (`ui/`). Omn
 still owns only the results + dashboard surfaces; `/` stays a branded search box
 (the new-tab start page is Flux's own). Below still holds.
 
+## Status: Phase 29 (corpus ×20 + broadened ruler) ✅
+
+Grew the index to **~12,037 docs** (broad Wikipedia, C++ cppreference, Python PEPs,
+Rust cargo/nomicon, Go stdlib) and broadened `scripts/eval.py` to **32 graded
+queries** across all those domains. The sturdier ruler **validates the `sw=2.0`
+default**: nDCG@10 is a flat plateau over sw∈[2,4] (~0.67 vs 0.48 lexical),
+success@10 = 0.97 at sw=2 — no retune. New domains all land (e.g. *"c++ vector"* →
+*std::vector*, *"python pep 8"* → *PEP 8*). Below still holds.
+
 ## Status: Phase 28 (graded-relevance eval + retune) ✅
 
 Upgraded `scripts/eval.py` to **graded relevance / nDCG@10** (each query has a set

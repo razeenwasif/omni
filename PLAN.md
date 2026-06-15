@@ -756,3 +756,24 @@ when quality rose).
   → *Validating References with Lifetimes*; *"theory of knowledge and justified
   belief"* → *The Value of Knowledge (SEP)*; *"fetch api http requests"* → *Using the
   Fetch API (MDN)*. 65 tests green, warning-free.
+
+### Phase 29 — Corpus ×20 + broadened ruler — DONE ✅
+Grew the corpus again and made the eval sturdier, then let it judge.
+- **Corpus**: added broad Wikipedia (science/math/CS/philosophy hubs), **C++**
+  reference (cppreference), Python PEPs + reference/howto, Rust cargo/nomicon, and
+  Go stdlib. Store **7823 → 12028 docs** (~20× the original 582); `omni.idx` rebuilt
+  to **12037 docs**, 12029 embedded (768-dim Ollama) in ~9 min, 4479 dated. New
+  seeds added to `seeds/academic.txt` (cppreference, go pkg, python peps/reference,
+  rust cargo).
+- **Sturdier ruler**: `scripts/eval.py` grown from 17 → **32 graded queries** across
+  C++, Go stdlib, Python, Rust, MDN, Wikipedia science/math, and SEP philosophy
+  (all grade-3 anchors verified present).
+- **Result — the broadened ruler validates the `sw=2.0` default**: nDCG@10 is a flat
+  plateau over `sw∈[2,4]` (0.666–0.675, vs 0.477 lexical-only), peaking at sw=3.0
+  but within 32-query noise; success@10 peaks at **0.97 at sw=2** (31/32 queries
+  surface a grade-≥2 doc in the top 10). So no retune — the default holds, now
+  confirmed on a much stronger eval.
+- New domains all land: *"c++ vector dynamic array"* → **std::vector (cppreference)**,
+  *"python pep 8 style"* → **PEP 8**, *"theory of relativity spacetime"* →
+  **Spacetime**, *"philosophy of mind consciousness"* → **The Neuroscience of
+  Consciousness (SEP)**. 65 tests green.

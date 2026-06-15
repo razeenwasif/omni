@@ -83,6 +83,56 @@ QUERIES = [
         "wiki/Machine_learning": 3, "wiki/Artificial_intelligence": 2,
         "wiki/Statistic": 1,
     }),
+    # --- broadened: C++ / Go stdlib / more Python+Rust / Wikipedia / SEP ---
+    ("c++ dynamic array vector container", {
+        "cpp/container/vector": 3, "cpp/container/array": 2, "cpp/container$": 1,
+    }),
+    ("c++ unique pointer smart pointer memory", {
+        "cpp/memory/unique_ptr": 3, "cpp/memory/shared_ptr": 2, "cpp/memory": 1,
+    }),
+    ("c++ string class", {
+        "cpp/string/basic_string": 3, "cpp/string": 1,
+    }),
+    ("go http web server package", {
+        "pkg/net/http": 3, "pkg/net/url": 1,
+    }),
+    ("go json encoding and decoding package", {
+        "pkg/encoding/json": 3, "pkg/encoding": 1,
+    }),
+    ("python regular expressions module", {
+        "library/re.html": 3, "howto/regex": 2, "library/re": 2,
+    }),
+    ("python pep 8 style guide conventions", {
+        "pep-0008": 3, "pep-0020": 1, "pep-0007": 1,
+    }),
+    ("rust error handling result and option types", {
+        "std/result": 3, "std/option": 2, "book/ch09": 2,
+    }),
+    ("rust traits and generic programming", {
+        "reference/items/traits": 3, "rust-by-example/trait": 3, "book/ch10": 2,
+    }),
+    ("theory of relativity einstein spacetime", {
+        "wiki/Theory_of_relativity": 3, "wiki/General_relativity": 3,
+        "wiki/Special_relativity": 2, "wiki/Spacetime": 1, "wiki/Albert_Einstein": 1,
+    }),
+    ("dna structure and genetics", {
+        "wiki/DNA": 3, "wiki/Genetics": 3, "wiki/Gene": 2, "wiki/Chromosome": 1,
+    }),
+    ("calculus derivatives and integrals", {
+        "wiki/Calculus": 3, "wiki/Derivative": 2, "wiki/Integral": 2,
+        "wiki/Limit_(mathematics)": 1,
+    }),
+    ("free will and determinism", {
+        "entries/freewill": 3, "entries/free-will": 3, "entries/determinism-causal": 2,
+        "entries/compatibilism": 2, "entries/incompatibilism": 2,
+    }),
+    ("philosophy of mind and consciousness", {
+        "entries/consciousness": 3, "entries/qualia": 2, "entries/mind": 1,
+    }),
+    ("utilitarianism and consequentialist ethics", {
+        "entries/consequentialism": 3, "entries/utilitarianism-history": 3,
+        "entries/hedonism": 1, "entries/ethics-deontological": 1,
+    }),
 ]
 
 MODES = [
