@@ -777,3 +777,26 @@ Grew the corpus again and made the eval sturdier, then let it judge.
   *"python pep 8 style"* → **PEP 8**, *"theory of relativity spacetime"* →
   **Spacetime**, *"philosophy of mind consciousness"* → **The Neuroscience of
   Consciousness (SEP)**. 65 tests green.
+
+### Phase 30 — Live ingest from Flux — DONE ✅
+The index now grows from what the user actually reads in Flux, not just crawls.
+- **Omni side** (`json.rs`, `server.rs`): `POST /ingest` now also accepts **JSON**
+  — `{url,title,text}` or an array — the natural payload for a browser, alongside
+  the existing doc-store text format (sniffed by the leading `{`/`[`). Added a tiny
+  hand-rolled JSON reader (objects/arrays, full string unescaping incl. `\u`
+  surrogate pairs, skips non-string fields) to keep the no-deps ethos. New urls are
+  staged → embedded → atomically swapped in (the live-merge machinery from Phase 19);
+  revisits are skipped. 68 tests green (3 new JSON tests).
+- **Flux side** (`~/Flux`, separate repo — validated with `cargo check` +
+  shell `tsc`, full Tauri build is Windows-only): Flux already captures each page's
+  visible text via `dom_publish`; that hook now also calls `omni::maybe_auto_ingest`,
+  which POSTs `{url,title,text}` to Omni's `/ingest`. Two paths, both reusing the
+  existing flux-core↔Omni `ureq` bridge + `omni_base()`:
+    * **explicit** `omni_ingest_active` command — "save this page to Omni",
+    * **opt-in auto** (`omni_ingest_set_auto`, off by default, seeded from
+      `FLUX_OMNI_INGEST=1`) — index every substantial page (≥500 chars, http(s))
+      on load. A toggle was added to Flux's `flux://omni` dashboard.
+  Privacy-first: nothing is ingested unless the user enables auto or clicks save.
+- Verified the Omni side end-to-end: JSON single + array ingest add docs that become
+  searchable; re-ingest is skipped. The Flux side compiles/typechecks; the user
+  builds it on Windows to exercise the live loop.

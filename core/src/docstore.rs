@@ -194,7 +194,7 @@ pub fn parse(raw: &str) -> Option<Record> {
 /// Parse a publish date (ISO-8601-ish: `YYYY-MM-DD`, optionally with a time) into
 /// unix seconds at day granularity. Returns 0 if it can't read a plausible date —
 /// so an absent/garbled date is simply "unknown", never a spurious timestamp.
-fn parse_published(s: &str) -> i64 {
+pub fn parse_published(s: &str) -> i64 {
     let mut nums = s.split(|c: char| !c.is_ascii_digit());
     let y: i64 = match nums.next().and_then(|x| x.parse().ok()) {
         Some(y) if (1970..=3000).contains(&y) => y,

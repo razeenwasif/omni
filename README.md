@@ -71,6 +71,16 @@ is visible in real time. UI is vanilla JS/CSS baked into the binary (`ui/`). Omn
 still owns only the results + dashboard surfaces; `/` stays a branded search box
 (the new-tab start page is Flux's own). Below still holds.
 
+## Status: Phase 30 (live ingest from Flux) ✅
+
+The index grows from what you read in Flux, not just crawls. `POST /ingest` now
+accepts **JSON** `{url,title,text}` (or an array) — the natural payload for a
+browser — alongside the doc-store text format, via a tiny hand-rolled JSON reader.
+On the Flux side (separate repo), the existing `dom_publish` page-capture hook POSTs
+the page to Omni: an explicit "save this page" command plus an **opt-in** auto-index
+toggle (off by default, ≥500-char http(s) pages) on the `flux://omni` dashboard.
+Privacy-first; reuses the live-merge atomic swap. Below still holds.
+
 ## Status: Phase 29 (corpus ×20 + broadened ruler) ✅
 
 Grew the index to **~12,037 docs** (broad Wikipedia, C++ cppreference, Python PEPs,

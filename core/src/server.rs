@@ -240,14 +240,29 @@ fn route(path: &str, index: &Index, suggester: &Suggester) -> Reply {
 /// skipped — use the offline `--update` path to replace existing pages.
 fn ingest_reply(live: &Arc<LiveIndex>, dir: Option<&std::path::Path>, body: &str) -> Reply {
     let snap = live.snapshot();
-    let records: Vec<crate::docstore::Record> = body
-        .split("\n---\n")
-        .filter_map(crate::docstore::parse)
-        .collect();
+    // Two accepted formats: JSON `{url,title,text}` (or an array) — what the Flux
+    // browser POSTs for the page it's viewing — or the doc-store text format.
+    let records: Vec<crate::docstore::Record> = match crate::json::parse_pages(body.trim()) {
+        Some(pages) => pages
+            .into_iter()
+            .filter(|p| !p.url.is_empty())
+            .map(|p| crate::docstore::Record {
+                url: p.url,
+                title: p.title,
+                links: Vec::new(),
+                text: p.text,
+                published: crate::docstore::parse_published(&p.published),
+            })
+            .collect(),
+        None => body
+            .split("\n---\n")
+            .filter_map(crate::docstore::parse)
+            .collect(),
+    };
     if records.is_empty() {
         return json(
             "400 Bad Request",
-            "{\"error\":\"no valid records — expect doc-store format (url:/title: headers, blank line, body), multiple records separated by a line ---\"}".to_string(),
+            "{\"error\":\"no valid records — POST JSON {url,title,text} (or an array), or doc-store text (url:/title: headers, blank line, body; records separated by a line ---)\"}".to_string(),
         );
     }
 

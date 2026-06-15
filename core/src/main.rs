@@ -16,6 +16,7 @@ mod docstore;
 mod embed;
 mod hnsw;
 mod index;
+mod json;
 mod live;
 mod merge;
 mod mmap;
