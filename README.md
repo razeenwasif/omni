@@ -71,6 +71,17 @@ is visible in real time. UI is vanilla JS/CSS baked into the binary (`ui/`). Omn
 still owns only the results + dashboard surfaces; `/` stays a branded search box
 (the new-tab start page is Flux's own). Below still holds.
 
+## Status: Phase 31 (cross-encoder reranking — opt-in) ✅
+
+Added an optional second-stage **cross-encoder reranker** (`rerank.rs`): the top
+hybrid candidates are re-scored jointly by a local LLM (RankGPT-style listwise via
+Ollama `/api/chat`), fed the query-biased passage. Opt-in via `&rerank=1`. But the
+graded-nDCG harness returned an honest **negative result**: on this corpus a small
+model *hurt* (0.67→0.34) and mid/large ones were *neutral* (≈0.67) while costing
+VRAM — the tuned hybrid is already strong enough that a local generative reranker
+adds nothing (a distilled ONNX cross-encoder would be the real path). So it ships
+**off by default**, as pluggable scaffolding. The harness doing its job. Below holds.
+
 ## Status: Phase 30 (live ingest from Flux) ✅
 
 The index grows from what you read in Flux, not just crawls. `POST /ingest` now

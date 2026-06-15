@@ -23,6 +23,7 @@ mod mmap;
 mod pagerank;
 mod persist;
 mod query;
+mod rerank;
 mod score;
 mod segment;
 mod server;

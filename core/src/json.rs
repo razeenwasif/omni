@@ -38,6 +38,23 @@ pub fn parse_pages(s: &str) -> Option<Vec<Page>> {
     )
 }
 
+/// Extract the string value of the first `"key": "..."` field found in `s`,
+/// resolving escapes. Used to read the Ollama chat reply's `content`.
+pub fn extract_string_field(s: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let at = s.find(&needle)?;
+    let mut p = Parser {
+        b: s.as_bytes(),
+        i: at + needle.len(),
+    };
+    p.expect(b':')?;
+    p.ws();
+    if p.peek()? != b'"' {
+        return None;
+    }
+    p.string()
+}
+
 use std::collections::HashMap;
 
 struct Parser<'a> {

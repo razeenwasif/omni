@@ -121,20 +121,27 @@ pub fn search(index: &Index, query: &str, k: usize) -> Vec<Hit> {
     search_with(index, query, k, SearchOpts::default())
 }
 
-/// Knobs for tuning retrieval (used by the eval harness and the `sw`/`lex`
-/// query params).
-#[derive(Clone, Copy)]
+/// Knobs for tuning retrieval (used by the eval harness and the `sw`/`lex`/
+/// `rerank` query params).
+#[derive(Clone)]
 pub struct SearchOpts {
     /// Weight of the semantic ranking in the hybrid fusion relative to lexical
     /// (1.0 = equal RRF, the default). `0.0` disables semantic entirely
     /// (lexical-only), even when the index is embedded.
     pub semantic_weight: f64,
+    /// Cross-encoder rerank the top candidates with a local LLM (opt-in; adds a
+    /// model call per query). See `rerank.rs`.
+    pub rerank: bool,
+    /// Reranker model override (else `rerank::DEFAULT_MODEL`).
+    pub rerank_model: Option<String>,
 }
 
 impl Default for SearchOpts {
     fn default() -> Self {
         SearchOpts {
             semantic_weight: DEFAULT_SEMANTIC_WEIGHT,
+            rerank: false,
+            rerank_model: None,
         }
     }
 }
@@ -262,6 +269,13 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
     } else {
         lexical // semantic disabled (lexical-only)
     };
+
+    // 7. Optional cross-encoder rerank of the top candidates (opt-in; a model
+    //    call per query, so it's a "deep search" mode — see rerank.rs).
+    if opts.rerank && ranked.len() > 1 {
+        let qterms: HashSet<String> = parsed.terms.iter().cloned().collect();
+        rerank_pool(index, query, &mut ranked, &qterms, &opts);
+    }
     ranked.truncate(k);
 
     // Build snippets only for the survivors.
@@ -279,6 +293,43 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
             }
         })
         .collect()
+}
+
+/// Rerank the top `rerank::POOL` of `ranked` in place with the LLM cross-encoder.
+/// On any failure the order is left unchanged (reranking only ever helps).
+fn rerank_pool(
+    index: &Index,
+    query: &str,
+    ranked: &mut [(Addr, f64)],
+    terms: &HashSet<String>,
+    opts: &SearchOpts,
+) {
+    let pool = ranked.len().min(crate::rerank::POOL);
+    if pool < 2 {
+        return;
+    }
+    let segs = index.segments();
+    let docs: Vec<(String, String)> = ranked[..pool]
+        .iter()
+        .map(|&((si, local), _)| {
+            let seg = &segs[si];
+            let title = seg.docs[local].title.clone();
+            // Query-biased passage (not lead boilerplate) so the reranker sees the
+            // relevant content.
+            let snippet = crate::snippet::plain(&seg.text(local), terms, 60);
+            (title, snippet)
+        })
+        .collect();
+    let base = index.embedder().host_base();
+    let model = opts
+        .rerank_model
+        .as_deref()
+        .unwrap_or(crate::rerank::DEFAULT_MODEL);
+    if let Some(new_order) = crate::rerank::order(&base, model, query, &docs) {
+        // (Addr, f64) is Copy, so collect the reordered prefix then write it back.
+        let reordered: Vec<(Addr, f64)> = new_order.iter().map(|&i| ranked[i]).collect();
+        ranked[..pool].copy_from_slice(&reordered);
+    }
 }
 
 /// Current unix time in seconds (0 if the clock is unavailable/before epoch).

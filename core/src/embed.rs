@@ -48,6 +48,19 @@ impl EmbedderConfig {
         self.kind != KIND_NONE
     }
 
+    /// Origin (`scheme://host[:port]`) of the Ollama-style host, for sibling
+    /// endpoints like `/api/chat` (the reranker). Derived from the embedder URL
+    /// when it's HTTP; falls back to localhost:11434.
+    pub fn host_base(&self) -> String {
+        if let Some(rest) = self.url.strip_prefix("http://") {
+            let host = rest.split('/').next().unwrap_or("");
+            if !host.is_empty() {
+                return format!("http://{host}");
+            }
+        }
+        "http://localhost:11434".to_string()
+    }
+
     /// Human-readable embedder kind (for stats / the dashboard).
     pub fn kind_name(&self) -> &'static str {
         match self.kind {
@@ -214,6 +227,21 @@ fn normalize(v: &mut [f32]) {
 /// fallback. Timeouts keep a slow/unreachable model from stalling a whole build —
 /// any error returns `None`, so the caller falls back to lexical-only.
 fn http_embed(url: &str, model: &str, text: &str) -> Option<Vec<f32>> {
+    let body = format!(
+        "{{\"model\":{},\"prompt\":{}}}",
+        json_str(model),
+        json_str(text)
+    );
+    let resp = http_post_json(url, &body, 60)?;
+    parse_embedding(&resp)
+}
+
+/// POST a JSON `body` to an Ollama-style HTTP endpoint and return the response
+/// **body** (chunked transfers decoded). Plain HTTP/1.0 (std has no TLS); a short
+/// connect timeout fails fast if the model is unreachable, and `read_secs` is
+/// generous because the first call may load the model. Shared by the embedder and
+/// the reranker; `None` on any error.
+pub(crate) fn http_post_json(url: &str, body: &str, read_secs: u64) -> Option<String> {
     let rest = url.strip_prefix("http://")?;
     let (hostport, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
@@ -223,48 +251,36 @@ fn http_embed(url: &str, model: &str, text: &str) -> Option<Vec<f32>> {
         Some((h, p)) => (h, p.parse::<u16>().unwrap_or(80)),
         None => (hostport, 80),
     };
-
-    let body = format!(
-        "{{\"model\":{},\"prompt\":{}}}",
-        json_str(model),
-        json_str(text)
-    );
     let req = format!(
         "POST {path} HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\n\
          Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-
-    // Resolve + connect with a short timeout — if the model is unreachable (e.g.
-    // Ollama not running), queries fall back to lexical fast instead of stalling.
     let addr = (host, port).to_socket_addrs().ok()?.next()?;
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2)).ok()?;
     stream
         .set_write_timeout(Some(Duration::from_secs(10)))
         .ok()?;
-    // Generous read timeout: the first call may load the model into memory.
     stream
-        .set_read_timeout(Some(Duration::from_secs(60)))
+        .set_read_timeout(Some(Duration::from_secs(read_secs)))
         .ok()?;
     stream.write_all(req.as_bytes()).ok()?;
 
     let mut resp = Vec::new();
     stream.read_to_end(&mut resp).ok()?;
     let resp = String::from_utf8_lossy(&resp);
-
     let hdr_end = resp.find("\r\n\r\n")? + 4;
     let (head, body) = (&resp[..hdr_end], &resp[hdr_end..]);
-    let decoded;
-    let body = if head
-        .to_ascii_lowercase()
-        .contains("transfer-encoding: chunked")
-    {
-        decoded = dechunk(body);
-        decoded.as_str()
-    } else {
-        body
-    };
-    parse_embedding(body)
+    Some(
+        if head
+            .to_ascii_lowercase()
+            .contains("transfer-encoding: chunked")
+        {
+            dechunk(body)
+        } else {
+            body.to_string()
+        },
+    )
 }
 
 /// Decode an HTTP/1.1 chunked transfer body into its payload. Each chunk is a hex
@@ -304,7 +320,7 @@ fn parse_embedding(json: &str) -> Option<Vec<f32>> {
 }
 
 /// Minimal JSON string literal encoder for the request body.
-fn json_str(s: &str) -> String {
+pub(crate) fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {

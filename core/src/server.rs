@@ -457,7 +457,11 @@ fn parse_search_opts(query_str: &str) -> query::SearchOpts {
             .and_then(|v| v.parse().ok())
             .unwrap_or(query::DEFAULT_SEMANTIC_WEIGHT)
     };
-    query::SearchOpts { semantic_weight }
+    query::SearchOpts {
+        semantic_weight,
+        rerank: query_param(query_str, "rerank").as_deref() == Some("1"),
+        rerank_model: query_param(query_str, "rr_model"),
+    }
 }
 
 /// Ranked search results as a JSON array (`fmt=json`) — for programmatic clients

@@ -800,3 +800,26 @@ The index now grows from what the user actually reads in Flux, not just crawls.
 - Verified the Omni side end-to-end: JSON single + array ingest add docs that become
   searchable; re-ingest is skipped. The Flux side compiles/typechecks; the user
   builds it on Windows to exercise the live loop.
+
+### Phase 31 — Cross-encoder reranking (opt-in) + an honest negative result ✅
+Added a second-stage **cross-encoder reranker** (`rerank.rs`): the top hybrid
+candidates are re-scored by an LLM that reads the query and each passage *together*
+(RankGPT-style listwise — Ollama has no `/api/rerank`). One `/api/chat` call returns
+the candidates in relevance order; lenient parsing + graceful fallback mean it can
+only help, never break, a query. Fed the **query-biased passage** (`snippet::plain`),
+not lead boilerplate, so the model sees the relevant content. Opt-in via `&rerank=1`
+(+ `&rr_model=`); refactored a shared `embed::http_post_json`; added `k=` to the JSON
+search and `extract_string_field` to the JSON reader.
+- **The harness then earned its keep — and said no.** Measured with graded nDCG@10
+  on the 12k-doc corpus: a small reranker (phi4-mini 3.8B) *hurt* badly
+  (**0.666 → 0.34**); mid/large instruct models (gemma4 e4b/12b) were exactly
+  **neutral** (0.666, they echo the hybrid order), and the 12B maxed local VRAM. The
+  eval-tuned hybrid is already strong enough that a *locally-runnable generative*
+  reranker adds nothing; a real gain needs a **distilled cross-encoder** (e.g.
+  bge-reranker via ONNX) — a dependency Omni doesn't carry.
+- **Decision**: ship it as **pluggable, opt-in, off-by-default** scaffolding (zero
+  VRAM/latency cost unless requested; default model set to the lightest *neutral*
+  one, `gemma4:e4b-it-qat`). When a dedicated reranker is available (ONNX, a much
+  stronger model, or a future Ollama rerank endpoint) it's a drop-in. Stopping a
+  default-on feature that would have added latency + VRAM for no gain is the eval
+  harness doing exactly what it's for. 70 tests green, warning-free.

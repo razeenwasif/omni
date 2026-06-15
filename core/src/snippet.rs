@@ -68,6 +68,36 @@ pub fn make(text: &str, stemmed_terms: &HashSet<String>) -> String {
     out
 }
 
+/// Plain-text query-biased snippet (no markup) of up to `max_words` words — the
+/// window where the query terms cluster. Feeds the reranker the *relevant* passage
+/// instead of a document's (often boilerplate) lead text, which is what lets a
+/// cross-encoder actually judge relevance.
+pub fn plain(text: &str, stemmed_terms: &HashSet<String>, max_words: usize) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return String::new();
+    }
+    let n = words.len();
+    let win = max_words.min(n);
+    let matches: Vec<bool> = words
+        .iter()
+        .map(|w| word_matches(w, stemmed_terms))
+        .collect();
+    let mut prefix = vec![0usize; n + 1];
+    for i in 0..n {
+        prefix[i + 1] = prefix[i] + matches[i] as usize;
+    }
+    let (mut best_start, mut best_count) = (0usize, 0usize);
+    for start in 0..=(n - win) {
+        let count = prefix[start + win] - prefix[start];
+        if count > best_count {
+            best_count = count;
+            best_start = start;
+        }
+    }
+    words[best_start..best_start + win].join(" ")
+}
+
 /// True if any token in `word` stems to one of the query terms.
 fn word_matches(word: &str, stemmed_terms: &HashSet<String>) -> bool {
     analyze::tokenize(word)

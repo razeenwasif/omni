@@ -136,14 +136,13 @@ QUERIES = [
 ]
 
 MODES = [
-    ("lexical-only",  "lex=1"),
+    ("lexical-only", "lex=1"),
     ("hybrid sw=1.0", "sw=1.0"),
     ("hybrid sw=2.0", "sw=2.0"),
-    ("hybrid sw=3.0", "sw=3.0"),
     ("hybrid sw=4.0", "sw=4.0"),
-    ("hybrid sw=6.0", "sw=6.0"),
-    ("hybrid sw=8.0", "sw=8.0"),
-    ("hybrid sw=12.0", "sw=12.0"),
+    # Opt-in LLM reranker — off by default; measured ~neutral vs the tuned hybrid
+    # on this corpus (small models hurt). See core/src/rerank.rs.
+    ("hybrid + rerank(e4b)", "sw=2.0&rerank=1&rr_model=gemma4:e4b-it-qat"),
 ]
 
 POOL_MODE = "sw=4.0"  # mode used to build the judged pool for the ideal DCG
