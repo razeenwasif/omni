@@ -71,6 +71,14 @@ is visible in real time. UI is vanilla JS/CSS baked into the binary (`ui/`). Omn
 still owns only the results + dashboard surfaces; `/` stays a branded search box
 (the new-tab start page is Flux's own). Below still holds.
 
+## Status: Phase 28 (graded-relevance eval + retune) ✅
+
+Upgraded `scripts/eval.py` to **graded relevance / nDCG@10** (each query has a set
+of relevant docs with grades, ideal DCG from a pooled deep fetch) so corpus gains
+stay measurable as the index grows. This flipped the earlier single-target tuning:
+graded nDCG@10 peaks at **sw ≈ 1–2** (0.68 vs 0.51 lexical) with success@10 = **1.00
+at sw=2**, so the default semantic weight was retuned **4.0 → 2.0**. Below still holds.
+
 ## Status: Phase 27 (corpus ×13 — deeper crawl) ✅
 
 Pushed the index to **~7832 docs** (Stanford SEP ~1800 entries, MDN Web/API/CSS/JS/

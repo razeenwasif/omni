@@ -735,3 +735,24 @@ library, math wikis: ProofWiki/MathWorld/nLab/Wikibooks/Wikiversity). Store
   program manages memory safely"* → **the Rustonomicon**, *"rules for who owns a
   value in rust"* → **Rust By Example: Scoping rules** (both from the new crawls);
   epistemology / ML / CSS-flexbox all still land. 65 tests green.
+
+### Phase 28 — Graded-relevance eval (nDCG@10) + retune — DONE ✅
+Upgraded the eval from a single exact target per query to **graded relevance**, so
+further corpus gains are measurable (the old metric dipped as the corpus grew even
+when quality rose).
+- **`scripts/eval.py`**: each of 17 queries now has a *set* of relevant URL patterns
+  with grades (3 = canonical, 2 = closely related, 1 = tangential; `$` = exact-page).
+  Metric is **nDCG@10** with the ideal DCG built from a **pooled** deep (k=50) fetch
+  — so patterns whose docs aren't in the corpus don't deflate the score. Also reports
+  **success@10** (a grade ≥ 2 doc in the top 10). Added a `k=` param to `/search`'s
+  JSON output to fetch the pool.
+- **Finding — it flips the earlier conclusion**: graded nDCG@10 peaks at `sw≈1–2`
+  (0.68 vs 0.51 lexical-only), and success@10 reaches **1.00 at sw=2** (every query
+  surfaces a strongly-relevant doc in the top 10). The single-exact-target metric had
+  over-favored high weights by only rewarding the one canonical page; crediting the
+  whole relevant *family* shows a balanced 2:1 hybrid is best.
+- **Re-tuned** `DEFAULT_SEMANTIC_WEIGHT` 4.0 → **2.0** (peak success@10, near-peak
+  nDCG). Verified live (default == sw=2): *"rust ownership borrowing and lifetimes"*
+  → *Validating References with Lifetimes*; *"theory of knowledge and justified
+  belief"* → *The Value of Knowledge (SEP)*; *"fetch api http requests"* → *Using the
+  Fetch API (MDN)*. 65 tests green, warning-free.

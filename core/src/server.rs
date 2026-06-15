@@ -207,7 +207,11 @@ fn route(path: &str, index: &Index, suggester: &Suggester) -> Reply {
             None => {
                 let opts = parse_search_opts(query_str);
                 if query_param(query_str, "fmt").as_deref() == Some("json") {
-                    json("200 OK", search_json(index, &q, opts))
+                    let k = query_param(query_str, "k")
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(20usize)
+                        .clamp(1, 100);
+                    json("200 OK", search_json(index, &q, opts, k))
                 } else {
                     page(
                         "200 OK",
@@ -443,11 +447,11 @@ fn parse_search_opts(query_str: &str) -> query::SearchOpts {
 
 /// Ranked search results as a JSON array (`fmt=json`) — for programmatic clients
 /// and the eval harness.
-fn search_json(index: &Index, q: &str, opts: query::SearchOpts) -> String {
+fn search_json(index: &Index, q: &str, opts: query::SearchOpts, k: usize) -> String {
     if q.is_empty() {
         return "[]".to_string();
     }
-    let items: Vec<String> = query::search_with(index, q, 20, opts)
+    let items: Vec<String> = query::search_with(index, q, k, opts)
         .iter()
         .map(|h| {
             format!(
