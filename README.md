@@ -71,6 +71,14 @@ is visible in real time. UI is vanilla JS/CSS baked into the binary (`ui/`). Omn
 still owns only the results + dashboard surfaces; `/` stays a branded search box
 (the new-tab start page is Flux's own). Below still holds.
 
+## Status: Phase 27 (corpus ×13 — deeper crawl) ✅
+
+Pushed the index to **~7832 docs** (Stanford SEP ~1800 entries, MDN Web/API/CSS/JS/
+HTTP, Rust nomicon + by-example + reference, Python library, math wikis) via deeper
+per-site crawls. The `scripts/eval.py` sweep flattened (MRR ~0.65 across weights), so
+the `sw=4.0` default held; qualitative quality improved with the richer corpus, e.g.
+*"how a program manages memory safely"* → *the Rustonomicon*. Below still holds.
+
 ## Status: Phase 26 (corpus ×8 + weight retune) ✅
 
 Expanded the index to **~4575 docs** (deep Stanford SEP, Rust/MDN/Python/Go docs,

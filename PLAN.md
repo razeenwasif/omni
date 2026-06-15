@@ -719,3 +719,19 @@ Grew the index again and let the eval re-pick the fusion weight.
 The corpus (`store/`) and index (`omni.idx/`) are gitignored — regenerate with
 `scripts/crawl-academic.sh` + a rebuild. The eval harness means the next corpus
 bump can be re-tuned on numbers, not vibes.
+
+### Phase 27 — Corpus ×13 (deeper crawl) — DONE ✅
+Pushed the corpus further with deeper per-site crawls (Stanford SEP to ~1800
+entries, MDN Web/API+CSS+JS+HTTP, Rust nomicon + by-example + reference, Python
+library, math wikis: ProofWiki/MathWorld/nLab/Wikibooks/Wikiversity). Store
+**4566 → 7823 docs** (~13× the original 582); `omni.idx` rebuilt to **7832 docs**,
+7827 embedded (768-dim Ollama) in ~5 min, 2448 dated.
+- **Re-eval**: the `scripts/eval.py` sweep **flattened** — MRR ~0.65 across `sw`
+  1–20, so the `sw=4.0` default held (no retune). recall@10 on the *exact* known-item
+  targets dipped (0.94 → ~0.82) — expected: among 7.8k docs there are now more
+  genuinely-relevant competitors (e.g. MDN's *Using promises* guide outranking the
+  bare `Promise` reference), which the strict single-target proxy reads as a miss.
+- **Qualitative quality improved**, confirming the dip isn't a regression: *"how a
+  program manages memory safely"* → **the Rustonomicon**, *"rules for who owns a
+  value in rust"* → **Rust By Example: Scoping rules** (both from the new crawls);
+  epistemology / ML / CSS-flexbox all still land. 65 tests green.
