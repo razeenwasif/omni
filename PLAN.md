@@ -696,3 +696,26 @@ An opt-in memory mode for large corpora.
   here (linear: ~3 GB at 1M docs). So the feared pessimization is negligible in
   practice; RAM stays the default, lazy is there for memory-constrained scale.
 - 65 tests green (incl. lazy==RAM equivalence), warning-free; Go clean.
+
+### Phase 26 — Corpus expansion ×8 + weight retune — DONE ✅
+Grew the index again and let the eval re-pick the fusion weight.
+- **Corpus**: widened `seeds/academic.txt` and ran targeted per-site crawls
+  (Stanford SEP deep, Rust book/reference/by-example, MDN CSS/Web-API, Python
+  library, Go spec, Wikipedia hubs). Store **582 → 4566 docs** (~7.8×);
+  `omni.idx` rebuilt to **4575 docs**, 4572 embedded (768-dim Ollama) in ~3.4 min,
+  1413 dated. Per-site crawls remain the way to beat the Wikipedia-dominated BFS.
+- **Re-tuned fusion**: re-ran `scripts/eval.py` (now 17 queries — natural-language
+  *and* keyword/navigational). Finding: **the optimal semantic weight grows with
+  corpus size** — as the index grows, lexical gets noisier (more keyword
+  collisions), so semantic should weigh more. recall@10 0.76 (lexical) → **0.94**
+  (hybrid), with the knee at **`sw≈4`** (vs ~1.0 at 1.8k docs). Bumped
+  `DEFAULT_SEMANTIC_WEIGHT` 1.0 → **4.0** (kept hybrid 4:1 so keyword queries still
+  land; verified default == sw=4 live).
+- Visible quality jump on the bigger corpus: *"rules for who owns a value in rust"*
+  → **std::ptr** (was *African Ethics*); *"theory of knowledge and justified belief"*
+  → **Foundationalist Theories of Epistemic Justification (SEP)**; *"css flexbox
+  layout"* → **CSS layout (MDN)**. 65 tests green, warning-free.
+
+The corpus (`store/`) and index (`omni.idx/`) are gitignored — regenerate with
+`scripts/crawl-academic.sh` + a rebuild. The eval harness means the next corpus
+bump can be re-tuned on numbers, not vibes.

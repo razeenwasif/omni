@@ -19,6 +19,12 @@ https://en.wikipedia.org/wiki/Algorithm
 https://en.wikipedia.org/wiki/Artificial_intelligence
 https://en.wikipedia.org/wiki/Philosophy
 https://en.wikipedia.org/wiki/Linguistics
+https://en.wikipedia.org/wiki/Machine_learning
+https://en.wikipedia.org/wiki/Data_structure
+https://en.wikipedia.org/wiki/Cryptography
+https://en.wikipedia.org/wiki/History_of_science
+https://en.wikipedia.org/wiki/Psychology
+https://en.wikipedia.org/wiki/Astronomy
 https://plato.stanford.edu/contents.html
 https://mathworld.wolfram.com/
 
@@ -42,10 +48,18 @@ https://ncatlab.org/nlab/show/HomePage
 
 # --- programming / technical docs ---
 https://developer.mozilla.org/en-US/docs/Web
+https://developer.mozilla.org/en-US/docs/Web/CSS
+https://developer.mozilla.org/en-US/docs/Web/API
+https://developer.mozilla.org/en-US/docs/Web/HTTP
 https://doc.rust-lang.org/book/
 https://doc.rust-lang.org/std/
+https://doc.rust-lang.org/reference/
+https://doc.rust-lang.org/rust-by-example/
 https://docs.python.org/3/
+https://docs.python.org/3/library/index.html
+https://docs.python.org/3/tutorial/index.html
 https://go.dev/doc/
+https://go.dev/ref/spec
 
 # --- "necessity" sites are NOT crawled here ---
 # YouTube, GitHub, Overleaf, Google Scholar are dynamic apps (JS/login), so

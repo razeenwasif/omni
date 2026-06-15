@@ -139,11 +139,14 @@ impl Default for SearchOpts {
     }
 }
 
-/// Tuned default weight for the semantic ranking in the hybrid fusion. Equal
-/// (1.0) RRF — confirmed near-optimal by `scripts/eval.py` on a 12-query
-/// known-item set (MRR@10 0.60 / recall@10 0.92, vs 0.39 / 0.67 lexical-only;
-/// weights in 1.5–3.0 did slightly worse). The `sw=`/`lex` query params override.
-pub const DEFAULT_SEMANTIC_WEIGHT: f64 = 1.0;
+/// Tuned default weight for the semantic ranking in the hybrid fusion. Tuned with
+/// `scripts/eval.py` (17 known-item queries — natural-language *and* keyword/
+/// navigational) on the ~4.5k-doc corpus: hybrid beats lexical-only by a wide
+/// margin (recall@10 0.94 vs 0.76), and `sw≈4` is the recall knee while staying a
+/// real hybrid (4:1 semantic:lexical), so keyword queries still land. The optimal
+/// weight rises with corpus size (lexical gets noisier as the index grows — at
+/// ~1.8k docs ~1.0 was best); `sw=`/`lex` query params override per request.
+pub const DEFAULT_SEMANTIC_WEIGHT: f64 = 4.0;
 
 /// Run `query` against `index` with explicit retrieval options.
 pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Vec<Hit> {

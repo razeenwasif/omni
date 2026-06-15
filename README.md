@@ -71,6 +71,15 @@ is visible in real time. UI is vanilla JS/CSS baked into the binary (`ui/`). Omn
 still owns only the results + dashboard surfaces; `/` stays a branded search box
 (the new-tab start page is Flux's own). Below still holds.
 
+## Status: Phase 26 (corpus ×8 + weight retune) ✅
+
+Expanded the index to **~4575 docs** (deep Stanford SEP, Rust/MDN/Python/Go docs,
+Wikipedia hubs) via targeted per-site crawls. Re-ran `scripts/eval.py` (17 queries):
+hybrid recall@10 **0.76 → 0.94**, and the optimal semantic weight rises with corpus
+size (lexical gets noisier at scale), so the default `sw` was retuned **1.0 → 4.0**.
+Visible gains, e.g. *"theory of knowledge and justified belief"* → *Foundationalist
+Theories of Epistemic Justification (SEP)*. Below still holds.
+
 ## Status: Phases 23–25 (bigger corpus · freshness · eval/tuning · ANN-mmap) ✅
 
 - **Corpus**: widened + deepened academic crawl → `omni.idx` is now **1819 docs**

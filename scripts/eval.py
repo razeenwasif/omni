@@ -26,17 +26,25 @@ QUERIES = [
     ("abductive reasoning inference to the best explanation","entries/abduction"),
     ("moral status and the ethics of abortion",             "entries/abortion"),
     ("what is aesthetic experience in art",                 "entries/aesthetic-experience"),
+    # Keyword / navigational queries (guard against over-weighting semantic):
+    ("hashmap",                                             "std/collections/struct.HashMap.html"),
+    ("promise",                                             "Global_Objects/Promise"),
+    ("python json encoding and decoding",                   "library/json.html"),
+    ("python asyncio event loop concurrency",               "library/asyncio"),
+    ("javascript fetch api http requests",                  "Web/API/Fetch_API"),
 ]
 
 # Retrieval modes: (label, query-string fragment).
 MODES = [
     ("lexical-only",  "lex=1"),
-    ("hybrid sw=0.5", "sw=0.5"),
     ("hybrid sw=1.0", "sw=1.0"),
-    ("hybrid sw=1.5", "sw=1.5"),
     ("hybrid sw=2.0", "sw=2.0"),
     ("hybrid sw=3.0", "sw=3.0"),
-    ("semantic-heavy sw=6.0", "sw=6.0"),
+    ("hybrid sw=4.0", "sw=4.0"),
+    ("hybrid sw=6.0", "sw=6.0"),
+    ("hybrid sw=8.0", "sw=8.0"),
+    ("hybrid sw=12.0", "sw=12.0"),
+    ("hybrid sw=20.0", "sw=20.0"),
 ]
 
 def fetch(query, frag):
