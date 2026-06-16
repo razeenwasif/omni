@@ -812,11 +812,17 @@ not lead boilerplate, so the model sees the relevant content. Opt-in via `&reran
 search and `extract_string_field` to the JSON reader.
 - **The harness then earned its keep — and said no.** Measured with graded nDCG@10
   on the 12k-doc corpus: a small reranker (phi4-mini 3.8B) *hurt* badly
-  (**0.666 → 0.34**); mid/large instruct models (gemma4 e4b/12b) were exactly
-  **neutral** (0.666, they echo the hybrid order), and the 12B maxed local VRAM. The
-  eval-tuned hybrid is already strong enough that a *locally-runnable generative*
+  (**0.666 → 0.34**); mid and large instruct models were exactly **neutral** —
+  gemma4 **e4b 0.666** and **12b 0.666** (both verified over 32 queries), they just
+  echo the already-good hybrid order. (success@10 is 0.97 — the hybrid already puts
+  a strong doc in the top 10 for 31/32 queries, so there's little for a reranker to
+  fix.) The eval-tuned hybrid is strong enough that a *locally-runnable generative*
   reranker adds nothing; a real gain needs a **distilled cross-encoder** (e.g.
   bge-reranker via ONNX) — a dependency Omni doesn't carry.
+- *(Correction: an earlier note here blamed VRAM for a crashed 12b eval run — that
+  was wrong. The box is a 24 GB RTX 4090; 12b+nomic sit at ~16 GB with headroom, no
+  OOM in the kernel log. That run was **terminated** (timeout/stray process), not
+  starved; the 12b result above is from a clean re-run.)*
 - **Decision**: ship it as **pluggable, opt-in, off-by-default** scaffolding (zero
   VRAM/latency cost unless requested; default model set to the lightest *neutral*
   one, `gemma4:e4b-it-qat`). When a dedicated reranker is available (ONNX, a much

@@ -77,10 +77,10 @@ Added an optional second-stage **cross-encoder reranker** (`rerank.rs`): the top
 hybrid candidates are re-scored jointly by a local LLM (RankGPT-style listwise via
 Ollama `/api/chat`), fed the query-biased passage. Opt-in via `&rerank=1`. But the
 graded-nDCG harness returned an honest **negative result**: on this corpus a small
-model *hurt* (0.67→0.34) and mid/large ones were *neutral* (≈0.67) while costing
-VRAM — the tuned hybrid is already strong enough that a local generative reranker
-adds nothing (a distilled ONNX cross-encoder would be the real path). So it ships
-**off by default**, as pluggable scaffolding. The harness doing its job. Below holds.
+model *hurt* (0.67→0.34) and mid/large ones were *neutral* (gemma4 e4b & 12b both
+0.666, verified) — the tuned hybrid is already strong enough that a local generative
+reranker adds nothing (a distilled ONNX cross-encoder would be the real path). So it
+ships **off by default**, as pluggable scaffolding. The harness doing its job. Below holds.
 
 ## Status: Phase 30 (live ingest from Flux) ✅
 

@@ -143,6 +143,7 @@ MODES = [
     # Opt-in LLM reranker — off by default; measured ~neutral vs the tuned hybrid
     # on this corpus (small models hurt). See core/src/rerank.rs.
     ("hybrid + rerank(e4b)", "sw=2.0&rerank=1&rr_model=gemma4:e4b-it-qat"),
+    ("hybrid + rerank(12b)", "sw=2.0&rerank=1&rr_model=gemma4:12b-it-qat"),
 ]
 
 POOL_MODE = "sw=4.0"  # mode used to build the judged pool for the ideal DCG
