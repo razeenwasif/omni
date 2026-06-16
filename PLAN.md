@@ -929,3 +929,11 @@ generative answer on top of the extractive one.
   call sites now send `think:false`; the reranker's effect is worth re-measuring.
 - **77 tests green**, warning-free. (Adding sites means the next `serve.sh` start
   bakes the new cards in and rebuilds the HNSW once — the usual one-time cost.)
+- **Streaming (`&stream=1`).** `GET /answer?...&stream=1` returns **Server-Sent
+  Events** instead of a buffered blob: a `sources` event first (instant, from
+  retrieval), then one `token` event per generated chunk, then `done`. A new
+  `embed::http_post_stream` reads Ollama's `"stream":true` NDJSON line-by-line over
+  the same HTTP/1.0 socket, and `rag::generate_stream` relays each `content` delta;
+  `server::stream_answer` writes the SSE frames straight to the client socket
+  (`TCP_NODELAY` so tokens hit the wire immediately, stops if the client hangs up).
+  This is what lets Flux's omnibox render the answer token-by-token.

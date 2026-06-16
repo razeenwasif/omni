@@ -79,8 +79,11 @@ Claude, npm/crates/PyPI, Google, Gmail/Maps/Drive, X, Amazon, Netflix, Spotify, 
 Notion, Figma, …), each with a `!bang` (`!li`, `!kg`, `!hf`) and a clickable card. And
 a true **generative answer** lands at `GET /answer`: it grounds a local LLM in the
 best passages of the top results and returns a cited (`[n]`) 2-5 sentence answer with
-its sources — opt-in and separate from `/search` (which stays instant). Default model
-`gemma4:12b-it-qat`. A required fix: gemma `*-it-qat` are reasoning models that emit
+its sources — opt-in and separate from `/search` (which stays instant). It also
+**streams**: `GET /answer?...&stream=1` returns Server-Sent Events (a `sources` event,
+then `token` events, then `done`) so a client can render the answer word-by-word.
+Default model `gemma4:12b-it-qat`. A required fix: gemma `*-it-qat` are reasoning
+models that emit
 an empty `content` unless the request sends `think:false` — which also means the
 earlier "gemma reranker ≈ neutral" result was likely the reranker silently falling
 back to hybrid order, worth re-measuring. Below still holds.

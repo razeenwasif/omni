@@ -56,6 +56,44 @@ pub fn generate(
     }
 }
 
+/// Like `generate`, but streams the answer **token by token** to `on_token` as the
+/// model produces it (Ollama `/api/chat` with `"stream":true`). `on_token` returns
+/// `false` to stop early (e.g. the client disconnected). Returns `true` if any
+/// token was emitted. Same `think:false` requirement as `generate`.
+pub fn generate_stream(
+    base: &str,
+    model: &str,
+    query: &str,
+    passages: &[(String, String, String)],
+    mut on_token: impl FnMut(&str) -> bool,
+) -> bool {
+    if passages.is_empty() || base.is_empty() {
+        return false;
+    }
+    let body = format!(
+        "{{\"model\":{},\"messages\":[{{\"role\":\"user\",\"content\":{}}}],\
+          \"stream\":true,\"think\":false,\"keep_alive\":\"5m\",\
+          \"options\":{{\"temperature\":0.2,\"num_predict\":400}}}}",
+        embed::json_str(model),
+        embed::json_str(&build_prompt(query, passages)),
+    );
+    let mut got = false;
+    embed::http_post_stream(&format!("{base}/api/chat"), &body, 180, |line| {
+        // Each line: {"message":{"role":"assistant","content":"<delta>"},"done":...}.
+        let mut keep = !line.contains("\"done\":true");
+        if let Some(delta) = crate::json::extract_string_field(line, "content") {
+            if !delta.is_empty() {
+                got = true;
+                if !on_token(&delta) {
+                    keep = false;
+                }
+            }
+        }
+        keep
+    });
+    got
+}
+
 /// Build the grounding prompt: the question plus numbered sources, with strict
 /// instructions to answer *only* from them and cite with `[n]`.
 fn build_prompt(query: &str, passages: &[(String, String, String)]) -> String {

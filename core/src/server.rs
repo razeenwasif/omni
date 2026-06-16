@@ -121,6 +121,22 @@ fn handle(
     }
 
     let route_path = path.split('?').next().unwrap_or("/");
+
+    // Streaming RAG answer (SSE) is written straight to the socket token-by-token,
+    // not buffered through `Reply`. Drop the request reader first so we can take a
+    // mutable borrow of the stream.
+    if method == "GET" && route_path == "/answer" {
+        let query_str = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+        if query_param(query_str, "stream").as_deref() == Some("1") {
+            drop(reader);
+            let q = query_param(query_str, "q").unwrap_or_default();
+            let model = query_param(query_str, "model")
+                .unwrap_or_else(|| crate::rag::DEFAULT_MODEL.to_string());
+            let index = live.snapshot();
+            return stream_answer(&mut stream, &index, &q, &model);
+        }
+    }
+
     let reply = if method == "POST" && route_path == "/ingest" {
         let mut body = vec![0u8; content_length];
         if content_length > 0 {
@@ -529,6 +545,72 @@ fn answer_json(index: &Index, q: &str, model: &str) -> String {
         answer,
         sources.join(",")
     )
+}
+
+/// Stream a generative answer as **Server-Sent Events** straight to the client
+/// socket. Emits a `sources` event first (instant, from retrieval), then one
+/// `token` event per generated chunk, then a `done` event. Each event is a single
+/// `data: <json>\n\n` line; the JSON carries a `type` of `sources` | `token` | `done`.
+/// Writing fails silently if the client hangs up (generation then stops).
+fn stream_answer(
+    stream: &mut TcpStream,
+    index: &Index,
+    q: &str,
+    model: &str,
+) -> std::io::Result<()> {
+    // Per-token writes should hit the wire immediately, not wait on Nagle.
+    let _ = stream.set_nodelay(true);
+    let head = "HTTP/1.1 200 OK\r\n\
+         Content-Type: text/event-stream; charset=utf-8\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Cache-Control: no-store\r\n\
+         Connection: close\r\n\r\n";
+    stream.write_all(head.as_bytes())?;
+
+    if q.is_empty() {
+        stream.write_all(b"data: {\"type\":\"done\"}\n\n")?;
+        return stream.flush();
+    }
+
+    // Retrieval first (fast): emit the grounding sources so the UI can show them
+    // before the (slower) generation starts.
+    let ctx = query::answer_context(index, q, crate::rag::CONTEXT_PASSAGES);
+    let sources: Vec<String> = ctx
+        .iter()
+        .enumerate()
+        .map(|(i, (title, url, _))| {
+            format!(
+                "{{\"n\":{},\"title\":{},\"url\":{}}}",
+                i + 1,
+                json_string(title),
+                json_string(url)
+            )
+        })
+        .collect();
+    stream.write_all(
+        format!(
+            "data: {{\"type\":\"sources\",\"sources\":[{}]}}\n\n",
+            sources.join(",")
+        )
+        .as_bytes(),
+    )?;
+    stream.flush()?;
+
+    // Stream tokens as the model produces them. Each becomes one SSE `token` event.
+    let base = index.embedder().host_base();
+    crate::rag::generate_stream(&base, model, q, &ctx, |tok| {
+        let ev = format!(
+            "data: {{\"type\":\"token\",\"text\":{}}}\n\n",
+            json_string(tok)
+        );
+        stream
+            .write_all(ev.as_bytes())
+            .and_then(|_| stream.flush())
+            .is_ok() // false ⇒ client gone ⇒ stop generating
+    });
+
+    stream.write_all(b"data: {\"type\":\"done\"}\n\n")?;
+    stream.flush()
 }
 
 /// Render the HTML results page.

@@ -17,7 +17,7 @@
 //! (`query.rs`). Vectors are L2-normalized, so cosine similarity is a dot product.
 
 use crate::analyze;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
@@ -281,6 +281,83 @@ pub(crate) fn http_post_json(url: &str, body: &str, read_secs: u64) -> Option<St
             body.to_string()
         },
     )
+}
+
+/// POST `body` and stream the response **body line by line** to `on_line` as each
+/// arrives — for NDJSON endpoints like Ollama's `/api/chat` with `"stream":true`,
+/// which emit one JSON object per line. HTTP/1.0 + `Connection: close`, so the body
+/// is close-delimited (no chunk framing). `on_line` receives each trimmed non-empty
+/// line and returns `false` to stop early. Returns `false` if the connection
+/// couldn't be established (caller can fall back to the buffered path).
+pub(crate) fn http_post_stream(
+    url: &str,
+    body: &str,
+    read_secs: u64,
+    mut on_line: impl FnMut(&str) -> bool,
+) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let (hostport, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) => (h, p.parse::<u16>().unwrap_or(80)),
+        None => (hostport, 80),
+    };
+    let req = format!(
+        "POST {path} HTTP/1.0\r\nHost: {host}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let Some(addr) = (host, port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut a| a.next())
+    else {
+        return false;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(2)) else {
+        return false;
+    };
+    if stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .is_err()
+        || stream
+            .set_read_timeout(Some(Duration::from_secs(read_secs)))
+            .is_err()
+        || stream.write_all(req.as_bytes()).is_err()
+    {
+        return false;
+    }
+    let mut reader = BufReader::new(stream);
+    // Skip the response headers (up to the blank line).
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => return true, // closed before any body
+            Ok(_) if line == "\r\n" || line == "\n" => break,
+            Ok(_) => {}
+            Err(_) => return true,
+        }
+    }
+    // Stream the body, one NDJSON line at a time.
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break, // EOF (server closed)
+            Ok(_) => {
+                let t = line.trim();
+                if !t.is_empty() && !on_line(t) {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    true
 }
 
 /// Decode an HTTP/1.1 chunked transfer body into its payload. Each chunk is a hex
