@@ -347,6 +347,31 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
     hits
 }
 
+/// Top-`n` results as `(title, url, best-passage-text)` for grounding a generative
+/// answer (`rag::generate`). Runs the normal hybrid search, then for each hit pulls
+/// the passage that best matches the query. Empty when the index isn't embedded or
+/// the query can't be embedded (a generative answer needs dense grounding).
+pub fn answer_context(index: &Index, query: &str, n: usize) -> Vec<(String, String, String)> {
+    let cfg = index.embedder();
+    if !cfg.enabled() {
+        return Vec::new();
+    }
+    let qv = match embed::Embedder::from_config(cfg).map(|e| e.embed_query(query)) {
+        Some(v) if !v.is_empty() => v,
+        _ => return Vec::new(),
+    };
+    let hits = search_with(index, query, n, SearchOpts::default());
+    let segs = index.segments();
+    hits.into_iter()
+        .filter_map(|h| {
+            let (si, local) = index.addr_for_url(&h.url)?;
+            let (i, _) = best_passage(&segs[si], local, &qv)?;
+            let text = passage_text(&segs[si], local, i, 0)?;
+            Some((h.title, h.url, text))
+        })
+        .collect()
+}
+
 /// The doc's best-matching passage for `qv`: its index and cosine. `None` if the
 /// doc has no stored passage vectors.
 fn best_passage(seg: &Segment, local: usize, qv: &[f32]) -> Option<(usize, f32)> {

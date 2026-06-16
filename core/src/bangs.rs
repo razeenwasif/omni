@@ -91,6 +91,189 @@ pub const SITES: &[Site] = &[
         search: "https://developer.mozilla.org/en-US/search?q={q}",
         blurb: "web platform and JavaScript reference",
     },
+    // ---- general sites people visit a lot --------------------------------------
+    // Professional / communities
+    Site {
+        keys: &["li", "linkedin"],
+        name: "LinkedIn",
+        home: "https://www.linkedin.com",
+        search: "https://www.linkedin.com/search/results/all/?keywords={q}",
+        blurb: "professional network, jobs, and people",
+    },
+    Site {
+        keys: &["md", "medium"],
+        name: "Medium",
+        home: "https://medium.com",
+        search: "https://medium.com/search?q={q}",
+        blurb: "articles, essays, and technical blogs",
+    },
+    Site {
+        keys: &["kg", "kaggle"],
+        name: "Kaggle",
+        home: "https://www.kaggle.com",
+        search: "https://www.kaggle.com/search?q={q}",
+        blurb: "datasets, notebooks, and ML competitions",
+    },
+    Site {
+        keys: &["r", "reddit"],
+        name: "Reddit",
+        home: "https://www.reddit.com",
+        search: "https://www.reddit.com/search/?q={q}",
+        blurb: "communities and discussion threads",
+    },
+    Site {
+        keys: &["hn", "hackernews"],
+        name: "Hacker News",
+        home: "https://news.ycombinator.com",
+        search: "https://hn.algolia.com/?q={q}",
+        blurb: "startup and technology news",
+    },
+    Site {
+        keys: &["dev", "devto"],
+        name: "DEV Community",
+        home: "https://dev.to",
+        search: "https://dev.to/search?q={q}",
+        blurb: "developer articles and discussion",
+    },
+    // AI / ML
+    Site {
+        keys: &["hf", "huggingface"],
+        name: "Hugging Face",
+        home: "https://huggingface.co",
+        search: "https://huggingface.co/search/full-text?q={q}",
+        blurb: "models, datasets, and ML spaces",
+    },
+    Site {
+        keys: &["gpt", "chatgpt"],
+        name: "ChatGPT",
+        home: "https://chatgpt.com",
+        search: "https://chatgpt.com/?q={q}",
+        blurb: "OpenAI's chat assistant",
+    },
+    Site {
+        keys: &["cl", "claude"],
+        name: "Claude",
+        home: "https://claude.ai",
+        search: "https://claude.ai/new?q={q}",
+        blurb: "Anthropic's AI assistant",
+    },
+    // Package registries
+    Site {
+        keys: &["npm"],
+        name: "npm",
+        home: "https://www.npmjs.com",
+        search: "https://www.npmjs.com/search?q={q}",
+        blurb: "JavaScript package registry",
+    },
+    Site {
+        keys: &["cr", "crates"],
+        name: "crates.io",
+        home: "https://crates.io",
+        search: "https://crates.io/search?q={q}",
+        blurb: "the Rust package registry",
+    },
+    Site {
+        keys: &["pypi"],
+        name: "PyPI",
+        home: "https://pypi.org",
+        search: "https://pypi.org/search/?q={q}",
+        blurb: "the Python package index",
+    },
+    // Search engines
+    Site {
+        keys: &["g", "google"],
+        name: "Google",
+        home: "https://www.google.com",
+        search: "https://www.google.com/search?q={q}",
+        blurb: "the web search engine",
+    },
+    Site {
+        keys: &["ddg"],
+        name: "DuckDuckGo",
+        home: "https://duckduckgo.com",
+        search: "https://duckduckgo.com/?q={q}",
+        blurb: "privacy-first web search",
+    },
+    // Google apps
+    Site {
+        keys: &["gm", "gmail"],
+        name: "Gmail",
+        home: "https://mail.google.com",
+        search: "https://mail.google.com/mail/u/0/#search/{q}",
+        blurb: "your email",
+    },
+    Site {
+        keys: &["maps", "gmaps"],
+        name: "Google Maps",
+        home: "https://maps.google.com",
+        search: "https://www.google.com/maps/search/{q}",
+        blurb: "maps, directions, and places",
+    },
+    Site {
+        keys: &["drive", "gdrive"],
+        name: "Google Drive",
+        home: "https://drive.google.com",
+        search: "https://drive.google.com/drive/search?q={q}",
+        blurb: "your files and documents",
+    },
+    // Social / media / shopping
+    Site {
+        keys: &["x", "twitter"],
+        name: "X (Twitter)",
+        home: "https://x.com",
+        search: "https://x.com/search?q={q}",
+        blurb: "posts and real-time updates",
+    },
+    Site {
+        keys: &["az", "amazon"],
+        name: "Amazon",
+        home: "https://www.amazon.com",
+        search: "https://www.amazon.com/s?k={q}",
+        blurb: "online shopping",
+    },
+    Site {
+        keys: &["nf", "netflix"],
+        name: "Netflix",
+        home: "https://www.netflix.com",
+        search: "https://www.netflix.com/search?q={q}",
+        blurb: "films and series",
+    },
+    Site {
+        keys: &["sp", "spotify"],
+        name: "Spotify",
+        home: "https://open.spotify.com",
+        search: "https://open.spotify.com/search/{q}",
+        blurb: "music and podcasts",
+    },
+    Site {
+        keys: &["imdb"],
+        name: "IMDb",
+        home: "https://www.imdb.com",
+        search: "https://www.imdb.com/find/?q={q}",
+        blurb: "films, TV, and cast",
+    },
+    Site {
+        keys: &["tw", "twitch"],
+        name: "Twitch",
+        home: "https://www.twitch.tv",
+        search: "https://www.twitch.tv/search?term={q}",
+        blurb: "live streams and gaming",
+    },
+    // Productivity
+    Site {
+        keys: &["nt", "notion"],
+        name: "Notion",
+        home: "https://www.notion.so",
+        search: "https://www.notion.so/search?q={q}",
+        blurb: "notes, docs, and wikis",
+    },
+    Site {
+        keys: &["fig", "figma"],
+        name: "Figma",
+        home: "https://www.figma.com",
+        search: "https://www.figma.com/community/search?resource_type=mixed&q={q}",
+        blurb: "collaborative design",
+    },
 ];
 
 /// If `query`'s first `!<key>` token names a known site, return the URL to
@@ -191,6 +374,32 @@ mod tests {
     fn encodes_special_characters() {
         let u = resolve("!so how to do x?").unwrap();
         assert!(u.contains("how%20to%20do%20x%3F"), "got {u}");
+    }
+
+    #[test]
+    fn resolves_a_general_site_bang() {
+        assert_eq!(
+            resolve("!li staff engineer").unwrap(),
+            "https://www.linkedin.com/search/results/all/?keywords=staff%20engineer"
+        );
+        assert_eq!(resolve("!kaggle").unwrap(), "https://www.kaggle.com");
+    }
+
+    #[test]
+    fn all_bang_keys_are_unique() {
+        // A duplicate key would make `lookup` resolve to whichever site comes first
+        // — a silent footgun as the table grows.
+        let mut seen = std::collections::HashSet::new();
+        for s in SITES {
+            for k in s.keys {
+                assert!(
+                    k.chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+                    "key {k:?} must be lowercase/digits"
+                );
+                assert!(seen.insert(*k), "duplicate bang key: {k:?}");
+            }
+        }
     }
 
     #[test]

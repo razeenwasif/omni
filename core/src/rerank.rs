@@ -47,9 +47,11 @@ pub fn order(
     if docs.len() < 2 {
         return None;
     }
+    // `think:false`: gemma *-it-qat reasoning models otherwise emit only a
+    // `thinking` field and an empty `content`, which parses as no ranking.
     let body = format!(
         "{{\"model\":{},\"messages\":[{{\"role\":\"user\",\"content\":{}}}],\
-          \"stream\":false,\"keep_alive\":\"5m\",\
+          \"stream\":false,\"think\":false,\"keep_alive\":\"5m\",\
           \"options\":{{\"temperature\":0,\"num_predict\":128}}}}",
         embed::json_str(model),
         embed::json_str(&build_prompt(query, docs)),

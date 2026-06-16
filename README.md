@@ -71,6 +71,20 @@ is visible in real time. UI is vanilla JS/CSS baked into the binary (`ui/`). Omn
 still owns only the results + dashboard surfaces; `/` stays a branded search box
 (the new-tab start page is Flux's own). Below still holds.
 
+## Status: Phase 34 (general sites + generative RAG) ✅
+
+The curated launch cards grew **9 → 34** — alongside the reference sites are the
+everyday ones (LinkedIn, Medium, Kaggle, Reddit, Hacker News, Hugging Face, ChatGPT,
+Claude, npm/crates/PyPI, Google, Gmail/Maps/Drive, X, Amazon, Netflix, Spotify, IMDb,
+Notion, Figma, …), each with a `!bang` (`!li`, `!kg`, `!hf`) and a clickable card. And
+a true **generative answer** lands at `GET /answer`: it grounds a local LLM in the
+best passages of the top results and returns a cited (`[n]`) 2-5 sentence answer with
+its sources — opt-in and separate from `/search` (which stays instant). Default model
+`gemma4:12b-it-qat`. A required fix: gemma `*-it-qat` are reasoning models that emit
+an empty `content` unless the request sends `think:false` — which also means the
+earlier "gemma reranker ≈ neutral" result was likely the reranker silently falling
+back to hybrid order, worth re-measuring. Below still holds.
+
 ## Status: Phase 33 (RAG answer mode + reranker on passages) ✅
 
 Search now returns a **direct answer**: the top hit's best-matching passage (argmax

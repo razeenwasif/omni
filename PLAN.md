@@ -899,3 +899,33 @@ the thing a reranker should judge. This phase spends them on both.
   stored crawl text (numeric + common named) so the answer reads as prose and the
   reranker sees clean text; decode-then-`html_escape` stays XSS-safe. **73 tests
   green**, warning-free.
+
+### Phase 34 — General sites + generative RAG answer mode — DONE ✅
+Two pushes: broaden the curated launch cards beyond reference sites, and add a true
+generative answer on top of the extractive one.
+- **Curated sites 9 → 34.** Added the everyday destinations alongside the reference
+  set: LinkedIn, Medium, Kaggle, Reddit, Hacker News, Dev.to, Hugging Face, ChatGPT,
+  Claude, npm, crates.io, PyPI, Google, DuckDuckGo, Gmail, Maps, Drive, X, Amazon,
+  Netflix, Spotify, IMDb, Twitch, Notion, Figma. Each gets bang keys (`!li`, `!kg`,
+  `!hf`, …), a real search-URL template, and an indexed launch card, all from the one
+  `SITES` table. New test asserts **every bang key is unique** (a dup would silently
+  shadow a site as the table grows).
+- **Generative RAG (`rag.rs`, `GET /answer`).** The heavier sibling of the extractive
+  answer: `query::answer_context` pulls the best passage from each of the top-5 hits,
+  and a local LLM composes a 2-5 sentence answer **grounded only in those passages**,
+  citing them `[n]`. Returns `{answer, sources[]}`. It's a model call per request
+  (seconds + VRAM), so it's a **separate opt-in endpoint**, never auto-run from
+  `/search`. Default model `gemma4:12b-it-qat` (`&model=` to override); graceful
+  `null` on any failure. Verified end-to-end: *“what is an inverted index and how
+  does BM25 rank documents”* → a correct, cited two-sentence answer grounded in the
+  Inverted-Index source.
+- **`think:false` — a real bug, and a correction.** gemma `*-it-qat` are *reasoning*
+  models: via Ollama `/api/chat` they spend the token budget in a `thinking` field
+  and return an **empty `content`**. The first `/answer` call returned `null` for
+  exactly this reason; adding `"think":false` fixed it. The same flag was missing
+  from the **reranker** — meaning the earlier "gemma 12b reranker ≈ neutral (0.666)"
+  result was almost certainly the reranker silently **falling back to the hybrid
+  order** (empty reply → `parse_order` → keep order), not a real measurement. Both
+  call sites now send `think:false`; the reranker's effect is worth re-measuring.
+- **77 tests green**, warning-free. (Adding sites means the next `serve.sh` start
+  bakes the new cards in and rebuilds the HNSW once — the usual one-time cost.)

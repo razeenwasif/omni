@@ -24,6 +24,7 @@ mod pagerank;
 mod passages;
 mod persist;
 mod query;
+mod rag;
 mod rerank;
 mod score;
 mod segment;

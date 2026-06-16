@@ -59,6 +59,7 @@ pub fn serve(
     );
     println!("  GET  /search?q=...  results page (HTML; !bangs redirect)");
     println!("  GET  /ac?q=...      autocomplete (JSON)");
+    println!("  GET  /answer?q=...  generative RAG answer (JSON; opt-in, slow)");
     println!("  GET  /stats         index stats (JSON)");
     println!("  GET  /dashboard     index dashboard (HTML)");
     println!("  POST /ingest        add doc-store records to the live index");
@@ -199,6 +200,12 @@ fn route(path: &str, index: &Index, suggester: &Suggester) -> Reply {
         ),
         "/dashboard" => page("200 OK", "text/html; charset=utf-8", dashboard_page()),
         "/ac" => json("200 OK", autocomplete_json(suggester, &q)),
+        // Generative RAG answer (opt-in, a model call per request — see rag.rs).
+        "/answer" => {
+            let model = query_param(query_str, "model")
+                .unwrap_or_else(|| crate::rag::DEFAULT_MODEL.to_string());
+            json("200 OK", answer_json(index, &q, &model))
+        }
         "/stats" => json("200 OK", stats_json(index)),
         "/sites" => json("200 OK", sites_json()),
         // A `!bang` query redirects to the target site; otherwise normal search.
@@ -489,6 +496,39 @@ fn search_json(index: &Index, q: &str, opts: query::SearchOpts, k: usize) -> Str
         })
         .collect();
     format!("[{}]", items.join(","))
+}
+
+/// Generative RAG answer as JSON: `{"answer": <string|null>, "sources": [...]}`.
+/// Grounds a local LLM in the best passages of the top results and asks it to
+/// answer with `[n]` citations. Slow (a model call) and opt-in — clients fetch this
+/// separately from `/search`, which stays instant.
+fn answer_json(index: &Index, q: &str, model: &str) -> String {
+    if q.is_empty() {
+        return "{\"answer\":null,\"sources\":[]}".to_string();
+    }
+    let ctx = query::answer_context(index, q, crate::rag::CONTEXT_PASSAGES);
+    let sources: Vec<String> = ctx
+        .iter()
+        .enumerate()
+        .map(|(i, (title, url, _))| {
+            format!(
+                "{{\"n\":{},\"title\":{},\"url\":{}}}",
+                i + 1,
+                json_string(title),
+                json_string(url)
+            )
+        })
+        .collect();
+    let base = index.embedder().host_base();
+    let answer = match crate::rag::generate(&base, model, q, &ctx) {
+        Some(a) => json_string(&a),
+        None => "null".to_string(),
+    };
+    format!(
+        "{{\"answer\":{},\"sources\":[{}]}}",
+        answer,
+        sources.join(",")
+    )
 }
 
 /// Render the HTML results page.
