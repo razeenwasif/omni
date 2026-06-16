@@ -873,3 +873,29 @@ unit a reranker and a future RAG answer mode operate on.
   ~212 MB→406 MB and the **first** serve start rebuilds the HNSW once (~3 min for
   65k vectors); thereafter the sidecar matches (essential cards are baked in) and
   load is instant. **72 tests green**, warning-free.
+
+### Phase 33 — RAG answer mode + reranker on real passages — DONE ✅
+Passages aren't just a ranking unit — they're the thing a reader actually wants and
+the thing a reranker should judge. This phase spends them on both.
+- **Extractive direct answer.** Each search now finds the top hit's *best-matching
+  passage* (argmax query↔passage cosine over the doc's stored passage vectors),
+  re-chunks the stored text to recover that passage verbatim, and returns it as a
+  **direct answer** — no LLM generation, so it's effectively free and adds zero VRAM.
+  Gated by a confidence floor (`ANSWER_MIN_SIM = 0.6`) so a weak match shows nothing
+  rather than a wrong paragraph. `Hit::answer` is set only on the top hit; the HTML
+  results page renders it as a featured card (violet glass), and `&answer=1` adds it
+  to the JSON. Spot-checks: *“python asyncio event loop”* → the lead definition
+  (“The event loop is the core of every asyncio application…”); *“rust ownership and
+  borrowing”* → the borrowing/scope passage.
+- **Reranker fed real passages.** `rerank_pool` now hands the LLM each candidate's
+  semantically-best passage (word-capped) instead of a keyword lead snippet — the
+  actual dense unit, so the cross-encoder judges the relevant content. (Still opt-in
+  and measured-neutral on this corpus; this just sharpens what it sees.)
+- **One query embedding, shared.** `search_with` embeds the query **once** and
+  threads the vector through hybrid fusion, the reranker, and the answer step
+  (`semantic_ranking` now takes the vector rather than re-embedding) — answer mode
+  costs only a cosine scan of one doc's passages on top.
+- **Entity cleanup.** `passage_text` decodes the HTML entities that survive into
+  stored crawl text (numeric + common named) so the answer reads as prose and the
+  reranker sees clean text; decode-then-`html_escape` stays XSS-safe. **73 tests
+  green**, warning-free.

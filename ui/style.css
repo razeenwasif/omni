@@ -164,6 +164,37 @@ body {
   letter-spacing: 0.2px;
 }
 
+/* ---- featured direct answer (top hit's best passage) ---- */
+.answer {
+  padding: 18px 20px;
+  margin: 4px 0 22px;
+  border-radius: var(--radius-card);
+  background: linear-gradient(135deg, rgba(123, 97, 255, 0.14), rgba(123, 97, 255, 0.05));
+  border: 1px solid rgba(123, 97, 255, 0.35);
+  box-shadow: 0 2px 18px rgba(123, 97, 255, 0.10);
+}
+.answer-label {
+  color: var(--violet);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.answer-text {
+  color: var(--text);
+  font-size: 15.5px;
+  line-height: 1.6;
+}
+.answer-src {
+  display: inline-block;
+  margin-top: 10px;
+  color: var(--violet);
+  font-size: 13px;
+  text-decoration: none;
+}
+.answer-src:hover { color: #b3a6ff; text-decoration: underline; }
+
 /* ---- result cards ---- */
 .result {
   padding: 16px 18px;

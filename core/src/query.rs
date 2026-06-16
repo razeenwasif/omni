@@ -33,6 +33,10 @@ pub struct Hit {
     /// HTML-safe, highlighted snippet (already escaped — insert as-is).
     pub snippet: String,
     pub score: f64,
+    /// Extractive "direct answer": the doc's passage that best matches the query,
+    /// set only on the top hit and only when `SearchOpts::answer` is on and the
+    /// match is confident enough. Plain text (not HTML — escape at render time).
+    pub answer: Option<String>,
 }
 
 /// Strength of the proximity bonus when distinct query terms appear near each
@@ -134,6 +138,10 @@ pub struct SearchOpts {
     pub rerank: bool,
     /// Reranker model override (else `rerank::DEFAULT_MODEL`).
     pub rerank_model: Option<String>,
+    /// Attach an extractive **direct answer** (the top hit's best-matching passage)
+    /// to `Hit::answer`. Needs an embedded index; costs one query embedding plus a
+    /// cosine scan of the top doc's passages. No LLM generation.
+    pub answer: bool,
 }
 
 impl Default for SearchOpts {
@@ -142,9 +150,15 @@ impl Default for SearchOpts {
             semantic_weight: DEFAULT_SEMANTIC_WEIGHT,
             rerank: false,
             rerank_model: None,
+            answer: false,
         }
     }
 }
+
+/// Minimum query↔passage cosine for a passage to be shown as a direct answer.
+/// `nomic-embed-text` puts genuinely on-topic passages around 0.6–0.75; below this
+/// we'd rather show nothing than a confidently-wrong paragraph.
+const ANSWER_MIN_SIM: f32 = 0.6;
 
 /// Tuned default weight for the semantic ranking in the hybrid fusion. Tuned with
 /// `scripts/eval.py`, which uses **graded relevance / nDCG@10** (each query has a
@@ -256,10 +270,27 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
     let mut lexical: Vec<(Addr, f64)> = scores.iter().map(|(&a, &s)| (a, s)).collect();
     lexical.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
+    // Embed the query once (reused by semantic fusion, the reranker, and the
+    // answer step) so we never round-trip the embedder more than necessary. Only
+    // when the index is embedded and something below actually needs it.
+    let qvec: Option<Vec<f32>> = {
+        let cfg = index.embedder();
+        if cfg.enabled() && (opts.semantic_weight > 0.0 || opts.rerank || opts.answer) {
+            embed::Embedder::from_config(cfg)
+                .map(|e| e.embed_query(query))
+                .filter(|v| !v.is_empty())
+        } else {
+            None
+        }
+    };
+
     // 6. Hybrid: if embedded (and semantic isn't disabled), fuse the lexical and
     //    semantic rankings with weighted Reciprocal Rank Fusion.
     let mut ranked: Vec<(Addr, f64)> = if opts.semantic_weight > 0.0 {
-        match semantic_ranking(index, query, &scores, &parsed, pool) {
+        match qvec
+            .as_deref()
+            .and_then(|qv| semantic_ranking(index, qv, &scores, &parsed, pool))
+        {
             Some(semantic) => rrf_weighted(
                 &[(ids(&lexical), 1.0), (semantic, opts.semantic_weight)],
                 RRF_K,
@@ -274,13 +305,29 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
     //    call per query, so it's a "deep search" mode — see rerank.rs).
     if opts.rerank && ranked.len() > 1 {
         let qterms: HashSet<String> = parsed.terms.iter().cloned().collect();
-        rerank_pool(index, query, &mut ranked, &qterms, &opts);
+        rerank_pool(index, query, &mut ranked, &qterms, qvec.as_deref(), &opts);
     }
     ranked.truncate(k);
 
+    // 8. RAG answer mode: the top hit's best-matching passage, returned verbatim as
+    //    an extractive direct answer (no generation — the passage *is* the answer).
+    let answer = if opts.answer {
+        ranked
+            .first()
+            .zip(qvec.as_deref())
+            .and_then(|(&((si, local), _score), qv)| {
+                let (i, sim) = best_passage(&segs[si], local, qv)?;
+                (sim >= ANSWER_MIN_SIM)
+                    .then(|| passage_text(&segs[si], local, i, 0))
+                    .flatten()
+            })
+    } else {
+        None
+    };
+
     // Build snippets only for the survivors.
     let term_set: HashSet<String> = parsed.terms.iter().cloned().collect();
-    ranked
+    let mut hits: Vec<Hit> = ranked
         .into_iter()
         .map(|((si, local), score)| {
             let seg = &segs[si];
@@ -290,9 +337,113 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
                 title: seg.docs[local].title.clone(),
                 snippet: snippet::make(text.as_ref(), &term_set),
                 score,
+                answer: None,
             }
         })
-        .collect()
+        .collect();
+    if let (Some(a), Some(h)) = (answer, hits.first_mut()) {
+        h.answer = Some(a);
+    }
+    hits
+}
+
+/// The doc's best-matching passage for `qv`: its index and cosine. `None` if the
+/// doc has no stored passage vectors.
+fn best_passage(seg: &Segment, local: usize, qv: &[f32]) -> Option<(usize, f32)> {
+    seg.passages(local)
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (i, embed::cosine(qv, p)))
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+}
+
+/// Plain text of passage `i`, re-chunked from the doc's stored text with the same
+/// chunker used at build time (so the index aligns with the stored passage
+/// vectors). HTML entities that survived crawling are decoded so the passage reads
+/// as prose (for the answer card *and* the reranker). `max_words == 0` returns the
+/// whole passage; otherwise it's truncated.
+fn passage_text(seg: &Segment, local: usize, i: usize, max_words: usize) -> Option<String> {
+    let text = seg.text(local);
+    let (words_per, max) = crate::passages::params();
+    let p = crate::passages::chunk(text.as_ref(), words_per, max)
+        .into_iter()
+        .nth(i)?;
+    let p = if max_words == 0 {
+        p
+    } else {
+        p.split_whitespace()
+            .take(max_words)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    Some(decode_entities(&p))
+}
+
+/// Decode the HTML entities that survive into stored crawl text (numeric `&#NN;` /
+/// `&#xHH;` and the common named ones) so a direct answer reads as plain prose;
+/// anything unrecognized passes through untouched. The result is later
+/// HTML-escaped at render, so decode-then-escape stays XSS-safe.
+fn decode_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+        match after.find(';') {
+            Some(semi) if semi <= 10 => match entity_char(&after[..semi]) {
+                Some(ch) => {
+                    out.push(ch);
+                    rest = &after[semi + 1..];
+                }
+                None => {
+                    out.push('&');
+                    rest = after;
+                }
+            },
+            _ => {
+                out.push('&');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Map an entity body (the text between `&` and `;`) to its character.
+fn entity_char(ent: &str) -> Option<char> {
+    if let Some(num) = ent.strip_prefix('#') {
+        let code = match num.strip_prefix(['x', 'X']) {
+            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+            None => num.parse::<u32>().ok()?,
+        };
+        return char::from_u32(code);
+    }
+    Some(match ent {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => ' ',
+        "rsquo" => '\u{2019}',
+        "lsquo" => '\u{2018}',
+        "rdquo" => '\u{201D}',
+        "ldquo" => '\u{201C}',
+        "mdash" => '\u{2014}',
+        "ndash" => '\u{2013}',
+        "hellip" => '\u{2026}',
+        "laquo" => '\u{00AB}',
+        "raquo" => '\u{00BB}',
+        "copy" => '\u{00A9}',
+        "reg" => '\u{00AE}',
+        "trade" => '\u{2122}',
+        "deg" => '\u{00B0}',
+        _ => return None,
+    })
 }
 
 /// Rerank the top `rerank::POOL` of `ranked` in place with the LLM cross-encoder.
@@ -302,6 +453,7 @@ fn rerank_pool(
     query: &str,
     ranked: &mut [(Addr, f64)],
     terms: &HashSet<String>,
+    qv: Option<&[f32]>,
     opts: &SearchOpts,
 ) {
     let pool = ranked.len().min(crate::rerank::POOL);
@@ -314,10 +466,15 @@ fn rerank_pool(
         .map(|&((si, local), _)| {
             let seg = &segs[si];
             let title = seg.docs[local].title.clone();
-            // Query-biased passage (not lead boilerplate) so the reranker sees the
-            // relevant content.
-            let snippet = crate::snippet::plain(&seg.text(local), terms, 60);
-            (title, snippet)
+            // Feed the reranker the doc's *semantically* best passage — the real
+            // dense-retrieval unit it should judge — rather than a keyword lead
+            // snippet. Falls back to a query-biased snippet when there's no query
+            // vector (lexical-only) or the doc has no passages.
+            let passage = qv
+                .and_then(|qv| best_passage(seg, local, qv))
+                .and_then(|(i, _)| passage_text(seg, local, i, 80))
+                .unwrap_or_else(|| crate::snippet::plain(&seg.text(local), terms, 60));
+            (title, passage)
         })
         .collect();
     let base = index.embedder().host_base();
@@ -348,25 +505,16 @@ fn ids(ranked: &[(Addr, f64)]) -> Vec<Addr> {
     ranked.iter().map(|&(a, _)| a).collect()
 }
 
-/// A semantic ranking of doc addresses by cosine to the query embedding, or
-/// `None` when embeddings are disabled or the query couldn't be embedded.
+/// A semantic ranking of doc addresses by cosine to the (pre-computed) query
+/// vector `qv` — a doc's score is its best passage's cosine. Uses the HNSW graph
+/// when present, else exact brute force over the embedded corpus.
 fn semantic_ranking(
     index: &Index,
-    query: &str,
+    qv: &[f32],
     lexical_pool: &HashMap<Addr, f64>,
     parsed: &ParsedQuery,
     pool: usize,
 ) -> Option<Vec<Addr>> {
-    let cfg = index.embedder();
-    if !cfg.enabled() {
-        return None;
-    }
-    let embedder = embed::Embedder::from_config(cfg)?;
-    let qv = embedder.embed_query(query);
-    if qv.is_empty() {
-        return None; // embedding failed → lexical only
-    }
-
     // Fast path: for a free-term query, recall semantic neighbors from the HNSW
     // graph in ~O(log N) instead of scanning every vector. (Phrase queries keep
     // the exact path below, scoring only the small phrase-filtered pool.)
@@ -385,7 +533,7 @@ fn semantic_ranking(
             // Over-fetch passage hits (a doc has several), then collapse to the best
             // passage per doc — results are sorted best-first, so first-seen wins.
             let ef = (pool * 2).max(64);
-            let raw = ann.search(&qv, ef, pool * crate::passages::MAX_PASSAGES, Some(&fetch));
+            let raw = ann.search(qv, ef, pool * crate::passages::MAX_PASSAGES, Some(&fetch));
             if !raw.is_empty() {
                 let mut seen: HashSet<Addr> = HashSet::new();
                 let mut docs: Vec<Addr> = Vec::new();
@@ -412,7 +560,7 @@ fn semantic_ranking(
             let best = seg
                 .passages(local)
                 .iter()
-                .map(|p| embed::cosine(&qv, p))
+                .map(|p| embed::cosine(qv, p))
                 .fold(f32::NEG_INFINITY, f32::max);
             if best.is_finite() {
                 scored.push(((si, local), best));
@@ -564,5 +712,19 @@ mod tests {
         assert_eq!(fused[0].0, 5);
         // Every input doc appears in the fused output exactly once.
         assert_eq!(fused.len(), 5);
+    }
+
+    #[test]
+    fn decode_entities_handles_named_numeric_and_passthrough() {
+        // Named, numeric decimal, and hex entities all decode.
+        assert_eq!(
+            decode_entities("Tim &amp; Harry&rsquo;s &#8212; done &#x2014;"),
+            "Tim & Harry\u{2019}s \u{2014} done \u{2014}"
+        );
+        // A bare ampersand and an unknown/over-long entity pass through untouched.
+        assert_eq!(decode_entities("a & b"), "a & b");
+        assert_eq!(decode_entities("&notanentity;"), "&notanentity;");
+        // No ampersand → cheap identity.
+        assert_eq!(decode_entities("plain text"), "plain text");
     }
 }

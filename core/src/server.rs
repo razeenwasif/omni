@@ -461,6 +461,7 @@ fn parse_search_opts(query_str: &str) -> query::SearchOpts {
         semantic_weight,
         rerank: query_param(query_str, "rerank").as_deref() == Some("1"),
         rerank_model: query_param(query_str, "rr_model"),
+        answer: query_param(query_str, "answer").as_deref() == Some("1"),
     }
 }
 
@@ -473,11 +474,17 @@ fn search_json(index: &Index, q: &str, opts: query::SearchOpts, k: usize) -> Str
     let items: Vec<String> = query::search_with(index, q, k, opts)
         .iter()
         .map(|h| {
+            // `answer` is present only on the top hit, and only when `&answer=1`.
+            let answer = match &h.answer {
+                Some(a) => format!(",\"answer\":{}", json_string(a)),
+                None => String::new(),
+            };
             format!(
-                "{{\"url\":{},\"title\":{},\"score\":{:.5}}}",
+                "{{\"url\":{},\"title\":{},\"score\":{:.5}{}}}",
                 json_string(&h.url),
                 json_string(&h.title),
-                h.score
+                h.score,
+                answer
             )
         })
         .collect();
@@ -489,6 +496,11 @@ fn results_page(index: &Index, q: &str, opts: query::SearchOpts) -> String {
     let hits = if q.is_empty() {
         Vec::new()
     } else {
+        // The results surface always tries for a direct answer (extractive, cheap).
+        let opts = query::SearchOpts {
+            answer: true,
+            ..opts
+        };
         query::search_with(index, q, 20, opts)
     };
 
@@ -509,6 +521,19 @@ fn results_page(index: &Index, q: &str, opts: query::SearchOpts) -> String {
             html_escape(q)
         ));
     } else {
+        // Featured direct answer (the top hit's best-matching passage), if confident.
+        if let Some((ans, top)) = hits.first().and_then(|h| h.answer.as_ref().map(|a| (a, h))) {
+            body.push_str(&format!(
+                "<div class=\"answer\">\
+                   <div class=\"answer-label\">Direct answer</div>\
+                   <div class=\"answer-text\">{text}</div>\
+                   <a class=\"answer-src\" href=\"{url}\">{title} →</a>\
+                 </div>",
+                text = html_escape(ans),
+                url = html_escape(&top.url),
+                title = html_escape(&top.title),
+            ));
+        }
         body.push_str(&format!("<div class=\"meta\">{} results</div>", hits.len()));
         for h in &hits {
             body.push_str(&format!(

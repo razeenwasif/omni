@@ -71,6 +71,17 @@ is visible in real time. UI is vanilla JS/CSS baked into the binary (`ui/`). Omn
 still owns only the results + dashboard surfaces; `/` stays a branded search box
 (the new-tab start page is Flux's own). Below still holds.
 
+## Status: Phase 33 (RAG answer mode + reranker on passages) ✅
+
+Search now returns a **direct answer**: the top hit's best-matching passage (argmax
+query↔passage cosine), recovered verbatim and shown as a featured card — purely
+**extractive**, so no LLM and zero added VRAM. A confidence floor means a weak match
+shows nothing rather than a wrong paragraph. On the HTML results page it's always on;
+over JSON it's opt-in via `&answer=1`. The opt-in LLM reranker now scores each
+candidate's **real best passage** (not a keyword snippet), and the query is embedded
+**once** and shared across hybrid fusion, the reranker, and the answer step. Stored
+HTML entities are decoded so answers read as prose. Below still holds.
+
 ## Status: Phase 32 (passage-level indexing) ✅
 
 Dense retrieval now works over **passages**, not whole docs: each page is chunked
