@@ -26,8 +26,10 @@ node_modules/
 # Crawler doc store
 /store/
 
-# Prebuilt index
+# Prebuilt index (and backups of it)
 *.idx
+*.idx.*.bak/
+*.idx.*.bak
 
 # Browser test artifacts
 .playwright-mcp/

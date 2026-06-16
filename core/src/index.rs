@@ -218,6 +218,7 @@ impl Index {
             for doc in Self::seg_mut(seg).docs.iter_mut() {
                 doc.embedding = Vec::new();
                 doc.emb_len = 0;
+                doc.n_passages = 0;
             }
         }
         self.embedder.dim = 0;
@@ -251,11 +252,15 @@ impl Index {
     /// cosine is both faster and strictly better than an approximation.
     pub fn build_ann(&mut self) {
         const ANN_MIN: usize = 64;
-        let mut items: Vec<((usize, usize), Vec<f32>)> = Vec::new();
+        // One graph node per *passage*, tagged with its doc address + passage index
+        // (grouped by doc so a lazy reload can cache per-doc decodes).
+        let mut items: Vec<((usize, usize), u32, Vec<f32>)> = Vec::new();
         for (si, seg) in self.segments.iter().enumerate() {
             for local in 0..seg.total_docs() {
                 if seg.is_live(local) && seg.docs[local].emb_len > 0 {
-                    items.push(((si, local), seg.embedding(local).into_owned()));
+                    for (pi, pv) in seg.passages(local).into_iter().enumerate() {
+                        items.push(((si, local), pi as u32, pv));
+                    }
                 }
             }
         }
@@ -269,44 +274,118 @@ impl Index {
     /// (re)embed an existing index you compact it first (`compact` rebuilds an
     /// in-memory segment, which this then embeds). Returns how many were embedded.
     pub fn embed_missing(&mut self, embedder: &Embedder) -> usize {
-        // Count the work up front so we can show progress (a real HTTP embedder is
-        // far slower than the instant hash one — hundreds of model calls).
-        let todo: usize = self
-            .segments
-            .iter()
-            .filter(|s| !s.is_lazy())
-            .flat_map(|s| s.docs.iter())
-            .filter(|d| !d.deleted && d.emb_len == 0)
-            .count();
-        let show = todo > 200; // only narrate large batches, not a few ingested docs
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let mut embedded = 0;
-        let mut dim = self.embedder.dim;
-        for seg in self.segments.iter_mut() {
+        // Phase A — gather work under an immutable borrow. Pre-chunk each doc into
+        // its title-prefixed passage prompts so the worker threads never touch the
+        // index. `(seg, doc)` index pairs let us write results back afterwards.
+        struct Work {
+            seg: usize,
+            doc: usize,
+            prompts: Vec<String>,
+        }
+        let (words_per, max_passages) = crate::passages::params();
+        let mut work: Vec<Work> = Vec::new();
+        for (si, seg) in self.segments.iter().enumerate() {
             if seg.is_lazy() {
                 continue;
             }
-            for doc in Self::seg_mut(seg).docs.iter_mut() {
+            for (di, doc) in seg.docs.iter().enumerate() {
                 if doc.deleted || doc.emb_len > 0 {
                     continue;
                 }
-                let v = embedder.embed_doc(&format!("{} {}", doc.title, doc.text));
-                if !v.is_empty() {
-                    if dim == 0 {
-                        dim = v.len();
-                    }
-                    doc.emb_len = v.len() as u32;
-                    doc.embedding = v;
-                    embedded += 1;
-                    if show && embedded % 100 == 0 {
-                        eprint!("\romni: embedding {embedded}/{todo} docs…");
-                        let _ = std::io::stderr().flush();
-                    }
+                let passages = crate::passages::chunk(&doc.text, words_per, max_passages);
+                if passages.is_empty() {
+                    continue;
                 }
+                let prompts = passages
+                    .iter()
+                    .map(|p| format!("{}. {}", doc.title, p))
+                    .collect();
+                work.push(Work {
+                    seg: si,
+                    doc: di,
+                    prompts,
+                });
             }
         }
+        let todo = work.len();
+        let show = todo > 200; // only narrate large batches, not a few ingested docs
+
+        // Phase B — embed passages in parallel. nomic-embed-text is tiny (~0.3 GB
+        // VRAM) and Ollama keeps one copy resident, so N concurrent HTTP requests
+        // share a single loaded model: this hides per-call connection latency
+        // without multiplying VRAM. The hash embedder benefits too (pure CPU).
+        // Each worker owns a contiguous slice and returns `(work_idx, np, flat)`;
+        // results carry their index so write-back stays deterministic.
+        let n_workers = todo.min(8).max(1);
+        let done = AtomicUsize::new(0);
+        let mut results: Vec<(usize, u32, Vec<f32>)> = Vec::with_capacity(todo);
+        if todo > 0 {
+            let work_ref = &work;
+            let done_ref = &done;
+            std::thread::scope(|s| {
+                let per = todo.div_ceil(n_workers);
+                let handles: Vec<_> = (0..n_workers)
+                    .map(|w| {
+                        let start = w * per;
+                        let end = (start + per).min(todo);
+                        s.spawn(move || {
+                            let mut out: Vec<(usize, u32, Vec<f32>)> = Vec::new();
+                            for wi in start..end {
+                                let mut flat: Vec<f32> = Vec::new();
+                                let mut np: u32 = 0;
+                                for prompt in &work_ref[wi].prompts {
+                                    let v = embedder.embed_doc(prompt);
+                                    if v.is_empty() {
+                                        continue; // skip a failed passage
+                                    }
+                                    flat.extend_from_slice(&v);
+                                    np += 1;
+                                }
+                                if np > 0 {
+                                    out.push((wi, np, flat));
+                                }
+                                let c = done_ref.fetch_add(1, Ordering::Relaxed) + 1;
+                                if show && c % 100 == 0 {
+                                    eprint!("\romni: embedding {c}/{todo} docs…");
+                                    let _ = std::io::stderr().flush();
+                                }
+                            }
+                            out
+                        })
+                    })
+                    .collect();
+                for h in handles {
+                    if let Ok(part) = h.join() {
+                        results.extend(part);
+                    }
+                }
+            });
+        }
         if show {
-            eprintln!("\romni: embedded {embedded}/{todo} docs                 ");
+            eprintln!(
+                "\romni: embedded {}/{todo} docs                 ",
+                results.len()
+            );
+        }
+
+        // Phase C — write embeddings back (mutable borrow). The per-passage dim is
+        // uniform for a given embedder; take it from the first vector produced.
+        let mut dim = self.embedder.dim;
+        if dim == 0 {
+            if let Some((_, np, flat)) = results.iter().find(|(_, np, _)| *np > 0) {
+                dim = flat.len() / *np as usize;
+            }
+        }
+        let mut embedded = 0;
+        for (wi, np, flat) in results {
+            let (seg, doc) = (work[wi].seg, work[wi].doc);
+            let d = &mut Self::seg_mut(&mut self.segments[seg]).docs[doc];
+            d.emb_len = dim as u32; // per-passage dim
+            d.n_passages = np;
+            d.embedding = flat;
+            embedded += 1;
         }
         self.embedder.dim = dim;
         embedded

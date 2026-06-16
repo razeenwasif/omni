@@ -71,6 +71,23 @@ is visible in real time. UI is vanilla JS/CSS baked into the binary (`ui/`). Omn
 still owns only the results + dashboard surfaces; `/` stays a branded search box
 (the new-tab start page is Flux's own). Below still holds.
 
+## Status: Phase 32 (passage-level indexing) ✅
+
+Dense retrieval now works over **passages**, not whole docs: each page is chunked
+(~150 words × ≤6 windows), every passage is embedded, and a doc's semantic score is
+its **best passage** (max-pool). This fixes a real failure of whole-doc embeddings —
+a long page overflows `nomic-embed-text`'s 2048-token context (a naive whole-doc
+rebuild left **21 % of docs unembedded**) — and gives a reranker / future RAG mode a
+real unit to work on. Segment format `OSG4→OSG5` (per-doc passage blob), HNSW nodes
+carry `(doc, passage)` (`OANN3`). Embedding is now **parallel** (8 scoped threads
+sharing one resident Ollama model): **~4 → ~50 docs/sec, no extra VRAM**.
+Apples-to-apples (shared-pool `scripts/compare.py`, sw=2.0, 32 queries) passages
+beat the same-text-budget whole-doc control **+2.9 % nDCG / +6 pp success@10**, and
+the naive whole-doc baseline by **+17.8 % / +13 pp**. (A note on rigor: `eval.py`'s
+nDCG is self-pooled and *not* comparable across different indexes — use `compare.py`
+for that.) Default chunking is 150×6; tunable via `OMNI_WORDS_PER` /
+`OMNI_MAX_PASSAGES`. Below still holds.
+
 ## Status: Phase 31 (cross-encoder reranking — opt-in) ✅
 
 Added an optional second-stage **cross-encoder reranker** (`rerank.rs`): the top

@@ -372,19 +372,30 @@ fn semantic_ranking(
     // the exact path below, scoring only the small phrase-filtered pool.)
     if parsed.phrases.is_empty() {
         if let Some(ann) = index.ann() {
-            // Lazy graphs decode vectors from the segments on demand via this fetch;
-            // RAM graphs ignore it. The closure borrows the index immutably, as does
-            // `ann` — both shared reads, fine.
-            let fetch = |(s, l): Addr| {
+            // The graph indexes *passages*; lazy graphs decode a passage vector via
+            // this fetch (RAM graphs ignore it). Both `ann` and the closure borrow
+            // the index immutably — fine.
+            let fetch = |(s, l): Addr, pi: u32| {
                 index
                     .segments()
                     .get(s)
-                    .map(|seg| seg.embedding(l).into_owned())
+                    .and_then(|seg| seg.passages(l).into_iter().nth(pi as usize))
                     .unwrap_or_default()
             };
-            let hits = ann.search(&qv, pool.max(64), pool, Some(&fetch));
-            if !hits.is_empty() {
-                return Some(hits.into_iter().map(|(a, _)| a).collect());
+            // Over-fetch passage hits (a doc has several), then collapse to the best
+            // passage per doc — results are sorted best-first, so first-seen wins.
+            let ef = (pool * 2).max(64);
+            let raw = ann.search(&qv, ef, pool * crate::passages::MAX_PASSAGES, Some(&fetch));
+            if !raw.is_empty() {
+                let mut seen: HashSet<Addr> = HashSet::new();
+                let mut docs: Vec<Addr> = Vec::new();
+                for (addr, _sim) in raw {
+                    if seen.insert(addr) {
+                        docs.push(addr);
+                    }
+                }
+                docs.truncate(pool);
+                return Some(docs);
             }
         }
     }
@@ -393,12 +404,19 @@ fn semantic_ranking(
 
     // Candidate set: with a phrase, restrict to docs that passed the filter;
     // otherwise the whole live, embedded corpus (exact brute-force fallback when
-    // no ANN graph was built). Embeddings are decoded from the mapping on demand.
+    // no ANN graph was built). A doc's score is its **best passage**'s cosine.
     let mut scored: Vec<(Addr, f32)> = Vec::new();
     let consider = |si: usize, local: usize, scored: &mut Vec<(Addr, f32)>| {
         let seg = &segs[si];
         if seg.docs[local].emb_len > 0 {
-            scored.push(((si, local), embed::cosine(&qv, &seg.embedding(local))));
+            let best = seg
+                .passages(local)
+                .iter()
+                .map(|p| embed::cosine(&qv, p))
+                .fold(f32::NEG_INFINITY, f32::max);
+            if best.is_finite() {
+                scored.push(((si, local), best));
+            }
         }
     };
     if parsed.phrases.is_empty() {

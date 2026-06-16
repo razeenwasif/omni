@@ -26,9 +26,10 @@ use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
 
-/// Fetches a node's raw (un-normalized) vector by global address — used in
-/// **lazy** mode to read embeddings from the index/mapping instead of a RAM copy.
-pub type Fetch<'a> = &'a dyn Fn(Addr) -> Vec<f32>;
+/// Fetches a node's raw (un-normalized) vector by `(doc address, passage index)` —
+/// used in **lazy** mode to read passage embeddings from the index/mapping instead
+/// of a RAM copy.
+pub type Fetch<'a> = &'a dyn Fn(Addr, u32) -> Vec<f32>;
 
 /// A global document address: `(segment index, local doc id)` — matches `query`.
 pub type Addr = (usize, usize);
@@ -109,8 +110,11 @@ pub struct Hnsw {
     /// the RAM duplicate at the cost of decoding per distance (only worth it at
     /// large scale; the default keeps them here).
     vectors: Vec<Vec<f32>>,
-    /// internal id → global document address.
+    /// internal id → global document address. Many nodes can share an `addr`
+    /// (one per *passage* of the doc); search dedups to the best passage per doc.
     addrs: Vec<Addr>,
+    /// internal id → which passage of its doc this node is (for lazy vector fetch).
+    passages: Vec<u32>,
     /// `links[id][layer]` = neighbor ids of `id` on `layer` (only layers the node
     /// exists on, i.e. `0..=levels[id]`).
     links: Vec<Vec<Vec<u32>>>,
@@ -134,16 +138,18 @@ fn normalize(v: &mut [f32]) {
 }
 
 impl Hnsw {
-    /// Build a graph over `(addr, vector)` items. Construction always uses the
-    /// vectors in RAM; when `keep_ram` is false they're dropped afterward, leaving
-    /// a **lazy** graph that re-reads vectors via a `Fetch` at search time.
-    pub fn build(items: Vec<(Addr, Vec<f32>)>, params: Params, keep_ram: bool) -> Hnsw {
-        let dim = items.first().map(|(_, v)| v.len()).unwrap_or(0);
+    /// Build a graph over `(doc addr, passage index, vector)` items — one per
+    /// passage. Construction always uses the vectors in RAM; when `keep_ram` is
+    /// false they're dropped afterward, leaving a **lazy** graph that re-reads
+    /// vectors via a `Fetch` at search time.
+    pub fn build(items: Vec<(Addr, u32, Vec<f32>)>, params: Params, keep_ram: bool) -> Hnsw {
+        let dim = items.first().map(|(_, _, v)| v.len()).unwrap_or(0);
         let mut h = Hnsw {
             params,
             dim,
             vectors: Vec::with_capacity(items.len()),
             addrs: Vec::with_capacity(items.len()),
+            passages: Vec::with_capacity(items.len()),
             links: Vec::with_capacity(items.len()),
             levels: Vec::with_capacity(items.len()),
             entry: None,
@@ -151,9 +157,9 @@ impl Hnsw {
         };
         // Seed mixes a constant with the item count for a stable-but-varied graph.
         let mut rng = Rng(0x6F6D_6E69_4E4E_53_u64 ^ items.len() as u64);
-        for (addr, mut v) in items {
+        for (addr, passage, mut v) in items {
             normalize(&mut v);
-            h.insert(addr, v, &mut rng);
+            h.insert(addr, passage, v, &mut rng);
         }
         if !keep_ram {
             h.vectors = Vec::new(); // lazy: drop the RAM copy, decode on demand
@@ -182,7 +188,7 @@ impl Hnsw {
         if !self.vectors.is_empty() {
             Cow::Borrowed(&self.vectors[id as usize])
         } else if let Some(f) = fetch {
-            let mut v = f(self.addrs[id as usize]);
+            let mut v = f(self.addrs[id as usize], self.passages[id as usize]);
             normalize(&mut v);
             Cow::Owned(v)
         } else {
@@ -211,12 +217,13 @@ impl Hnsw {
         ((-u.ln()) * ml).floor() as usize
     }
 
-    fn insert(&mut self, addr: Addr, v: Vec<f32>, rng: &mut Rng) {
+    fn insert(&mut self, addr: Addr, passage: u32, v: Vec<f32>, rng: &mut Rng) {
         let id = self.vectors.len() as u32;
         let l = self.random_level(rng).min(MAX_LEVEL);
         let q = v.clone();
         self.vectors.push(v);
         self.addrs.push(addr);
+        self.passages.push(passage);
         self.levels.push(l);
         self.links.push((0..=l).map(|_| Vec::new()).collect());
 
@@ -431,6 +438,7 @@ impl Hnsw {
             let (seg, local) = self.addrs[id];
             wv(&mut b, seg as u64);
             wv(&mut b, local as u64);
+            wv(&mut b, self.passages[id] as u64);
             let level = self.levels[id];
             wv(&mut b, level as u64);
             for lc in 0..=level {
@@ -452,7 +460,7 @@ impl Hnsw {
     pub fn from_bytes(
         bytes: &[u8],
         keep_ram: bool,
-        mut vector_for: impl FnMut(Addr) -> Option<Vec<f32>>,
+        mut vector_for: impl FnMut(Addr, u32) -> Option<Vec<f32>>,
     ) -> Option<Hnsw> {
         let mut r = Rd { b: bytes, pos: 0 };
         if r.take(ANN_MAGIC.len())? != ANN_MAGIC {
@@ -475,6 +483,7 @@ impl Hnsw {
             dim,
             vectors: Vec::with_capacity(if keep_ram { n } else { 0 }),
             addrs: Vec::with_capacity(n),
+            passages: Vec::with_capacity(n),
             links: Vec::with_capacity(n),
             levels: Vec::with_capacity(n),
             entry,
@@ -482,6 +491,7 @@ impl Hnsw {
         };
         for _ in 0..n {
             let addr = (r.varint()? as usize, r.varint()? as usize);
+            let passage = r.varint()? as u32;
             let level = r.varint()? as usize;
             let mut node_links = Vec::with_capacity(level + 1);
             for _ in 0..=level {
@@ -493,11 +503,12 @@ impl Hnsw {
                 node_links.push(layer);
             }
             if keep_ram {
-                let mut v = vector_for(addr)?; // missing ⇒ stale graph
+                let mut v = vector_for(addr, passage)?; // missing ⇒ stale graph
                 normalize(&mut v);
                 h.vectors.push(v);
             }
             h.addrs.push(addr);
+            h.passages.push(passage);
             h.levels.push(level);
             h.links.push(node_links);
         }
@@ -506,7 +517,7 @@ impl Hnsw {
 }
 
 /// ANN sidecar format magic (+ version).
-const ANN_MAGIC: &[u8; 5] = b"OANN2";
+const ANN_MAGIC: &[u8; 5] = b"OANN3";
 
 /// Append an unsigned LEB128 varint.
 fn wv(buf: &mut Vec<u8>, mut x: u64) {
@@ -575,11 +586,11 @@ mod tests {
                     .collect::<Vec<f32>>(),
             );
         }
-        let items: Vec<(Addr, Vec<f32>)> = vecs
+        let items: Vec<(Addr, u32, Vec<f32>)> = vecs
             .iter()
             .cloned()
             .enumerate()
-            .map(|(i, v)| ((0, i), v))
+            .map(|(i, v)| ((0, i), 0u32, v))
             .collect();
         let h = Hnsw::build(items, Params::default(), true);
         assert_eq!(h.len(), n);
@@ -617,19 +628,20 @@ mod tests {
     fn persist_round_trips_identically() {
         let (dim, n) = (10usize, 200usize);
         let mut rng = Rng(0xABCD_1234);
-        let items: Vec<(Addr, Vec<f32>)> = (0..n)
+        let items: Vec<(Addr, u32, Vec<f32>)> = (0..n)
             .map(|i| {
                 let v: Vec<f32> = (0..dim).map(|_| (rng.unit() as f32) * 2.0 - 1.0).collect();
-                ((0usize, i), v)
+                ((0usize, i), 0u32, v)
             })
             .collect();
         let original = Hnsw::build(items.clone(), Params::default(), true);
 
         // Serialize topology, then rehydrate vectors from the same source.
         let bytes = original.to_bytes();
-        let by_addr: std::collections::HashMap<Addr, Vec<f32>> = items.into_iter().collect();
-        let restored =
-            Hnsw::from_bytes(&bytes, true, |a| by_addr.get(&a).cloned()).expect("valid sidecar");
+        let by_addr: std::collections::HashMap<Addr, Vec<f32>> =
+            items.into_iter().map(|(a, _pi, v)| (a, v)).collect();
+        let restored = Hnsw::from_bytes(&bytes, true, |a, _pi| by_addr.get(&a).cloned())
+            .expect("valid sidecar");
         assert_eq!(restored.len(), original.len());
 
         // Identical search results before and after a round-trip.
@@ -645,9 +657,9 @@ mod tests {
         }
 
         // A missing vector ⇒ stale graph ⇒ None (caller rebuilds).
-        assert!(Hnsw::from_bytes(&bytes, true, |_| None::<Vec<f32>>).is_none());
+        assert!(Hnsw::from_bytes(&bytes, true, |_, _| None::<Vec<f32>>).is_none());
         // Garbage bytes ⇒ None, not a panic.
-        assert!(Hnsw::from_bytes(b"nope", true, |_| Some(vec![0.0; dim])).is_none());
+        assert!(Hnsw::from_bytes(b"nope", true, |_, _| Some(vec![0.0; dim])).is_none());
     }
 
     #[test]
@@ -656,13 +668,14 @@ mod tests {
         // lazy just fetches each vector on demand instead of holding a copy.
         let (dim, n) = (10usize, 200usize);
         let mut rng = Rng(0x2468_ACE0);
-        let items: Vec<(Addr, Vec<f32>)> = (0..n)
+        let items: Vec<(Addr, u32, Vec<f32>)> = (0..n)
             .map(|i| {
                 let v: Vec<f32> = (0..dim).map(|_| (rng.unit() as f32) * 2.0 - 1.0).collect();
-                ((0usize, i), v)
+                ((0usize, i), 0u32, v)
             })
             .collect();
-        let by_addr: std::collections::HashMap<Addr, Vec<f32>> = items.iter().cloned().collect();
+        let by_addr: std::collections::HashMap<Addr, Vec<f32>> =
+            items.iter().cloned().map(|(a, _pi, v)| (a, v)).collect();
 
         let ram = Hnsw::build(items.clone(), Params::default(), true);
         let lazy = Hnsw::build(items, Params::default(), false);
@@ -670,7 +683,7 @@ mod tests {
         assert_eq!(lazy.len(), n);
 
         // Lazy fetch returns the raw vector for an address (search re-normalizes).
-        let fetch = |a: Addr| by_addr.get(&a).cloned().unwrap_or_default();
+        let fetch = |a: Addr, _pi: u32| by_addr.get(&a).cloned().unwrap_or_default();
 
         let mut qr = Rng(0x1357);
         for _ in 0..25 {
@@ -690,7 +703,11 @@ mod tests {
         assert!(empty.is_empty());
         assert!(empty.search(&[1.0, 0.0], 10, 5, None).is_empty());
 
-        let one = Hnsw::build(vec![((0, 0), vec![1.0, 0.0, 0.0])], Params::default(), true);
+        let one = Hnsw::build(
+            vec![((0, 0), 0u32, vec![1.0, 0.0, 0.0])],
+            Params::default(),
+            true,
+        );
         let got = one.search(&[0.9, 0.1, 0.0], 10, 5, None);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, (0, 0));

@@ -25,8 +25,9 @@ use std::sync::{Arc, RwLock};
 /// query can't match across the field boundary.
 const FIELD_GAP: u32 = 100;
 
-/// Cap on the stored body text used for snippet generation (chars).
-const STORED_TEXT_CAP: usize = 4000;
+/// Cap on the stored body text (chars) — used for snippets *and* passage
+/// chunking, so it's generous enough to hold several passages, not just the lead.
+const STORED_TEXT_CAP: usize = 8000;
 
 /// One stored document. In a lazy (loaded) segment the small fields are eager,
 /// but the large `text` and `embedding` are left empty here and fetched on demand
@@ -43,9 +44,14 @@ pub struct Document {
     pub rank: f64,
     pub content_hash: u64,
     pub deleted: bool,
+    /// Passage embeddings, **flattened**: `n_passages × emb_len` floats (one
+    /// vector per passage of the doc; see `passages.rs`). Empty if not embedded.
     pub embedding: Vec<f32>,
-    /// Embedding length, even when the vector itself is lazily on disk.
+    /// Per-passage embedding dimension (0 = not embedded). Known even when the
+    /// vectors are lazily on disk.
     pub emb_len: u32,
+    /// Number of passage vectors stored in `embedding`.
+    pub n_passages: u32,
     /// Publish time as unix seconds (0 = unknown), for the freshness boost.
     pub published: i64,
 }
@@ -229,19 +235,33 @@ impl Segment {
         }
     }
 
-    /// The embedding vector for a doc — decoded from the mapping on demand in
-    /// lazy mode. Empty if the doc has none.
+    /// The doc's **flat** passage-embedding blob (`n_passages × emb_len` floats),
+    /// decoded from the mapping on demand in lazy mode. Empty if not embedded.
     pub fn embedding(&self, doc_id: usize) -> Cow<'_, [f32]> {
-        let emb_len = self.docs[doc_id].emb_len as usize;
+        let d = &self.docs[doc_id];
+        let total = d.emb_len as usize * d.n_passages as usize;
         match &self.data {
-            Some(_) if emb_len == 0 => Cow::Owned(Vec::new()),
+            Some(_) if total == 0 => Cow::Owned(Vec::new()),
             Some(b) => Cow::Owned(crate::persist::decode_doc_embedding(
                 b.as_slice(),
                 self.doc_offsets[doc_id],
-                emb_len,
+                total,
             )),
             None => Cow::Borrowed(&self.docs[doc_id].embedding),
         }
+    }
+
+    /// The doc's passage vectors as owned rows (`n_passages` of length `emb_len`).
+    /// Decodes the blob once. Empty if the doc isn't embedded.
+    pub fn passages(&self, doc_id: usize) -> Vec<Vec<f32>> {
+        let dim = self.docs[doc_id].emb_len as usize;
+        if dim == 0 {
+            return Vec::new();
+        }
+        self.embedding(doc_id)
+            .chunks(dim)
+            .map(|c| c.to_vec())
+            .collect()
     }
 
     /// Positions of `term` within a local doc, if present (owned copy).
@@ -333,6 +353,7 @@ impl Segment {
             deleted: false,
             embedding: Vec::new(),
             emb_len: 0,
+            n_passages: 0,
             published: 0,
         });
         self.live_count += 1;

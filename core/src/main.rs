@@ -21,6 +21,7 @@ mod live;
 mod merge;
 mod mmap;
 mod pagerank;
+mod passages;
 mod persist;
 mod query;
 mod rerank;

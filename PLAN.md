@@ -829,3 +829,47 @@ search and `extract_string_field` to the JSON reader.
   stronger model, or a future Ollama rerank endpoint) it's a drop-in. Stopping a
   default-on feature that would have added latency + VRAM for no gain is the eval
   harness doing exactly what it's for. 70 tests green, warning-free.
+
+### Phase 32 — Passage-level indexing (the dense-retrieval unit) — DONE ✅
+Whole-doc embeddings average a long page into one vector and, worse, **overflow
+`nomic-embed-text`'s 2048-token context** — a naive whole-doc rebuild left **21 %
+of docs (2520/12027) with no embedding at all**. The fix is to retrieve over
+**passages**: chunk each doc (`passages.rs`, ~150 words × ≤6 windows), embed each,
+and let a doc's semantic score be its **best passage** (max-pool). This is also the
+unit a reranker and a future RAG answer mode operate on.
+- **Storage (segment format `OSG4`→`OSG5`)**: each `Document` now stores a flat
+  blob of `n_passages × dim` f32 plus `n_passages`; `segment.passages()` slices it
+  back. `HNSW` nodes carry `(doc Addr, passage_idx)` (`OANN2`→`OANN3`); search
+  over-fetches passages then dedups to **best-passage-first** docs. Brute-force and
+  lazy/mmap paths max-pool too. `STORED_TEXT_CAP` 4000→8000.
+- **Parallel embedder (~12×)**: `embed_missing` now pre-chunks under an immutable
+  borrow, embeds passages across **8 scoped threads**, and writes back by index
+  (deterministic). Ollama keeps one resident 0.3 GB nomic model and serves the
+  concurrent requests from it, so wall-time went **~4 → ~50 docs/sec** with **no**
+  extra VRAM (~2.3 GB total on the 4090). Chunk size is env-tunable for experiments
+  (`OMNI_WORDS_PER`, `OMNI_MAX_PASSAGES`).
+- **A methodology catch.** `eval.py` normalizes nDCG against a *per-index self-pool*
+  (its own deep fetch), so its nDCG is **not comparable across two different
+  indexes** — a stronger index builds a deeper pool, a bigger ideal DCG, and an
+  identical lexical run then scores *lower*. (Symptom: lexical-only read 0.466 on the
+  passage index vs 0.630 on a whole-doc one, despite BM25 being identical.) Added
+  `scripts/compare.py`: a **shared pool** (union of every host's deep fetch) + raw
+  **DCG@10** + **success@10**, all comparable across servers.
+- **Result (shared pool, sw=2.0, 32 queries)** — passages win on every comparable
+  metric:
+
+  | index | DCG@10 | nDCG@10* | success@10 |
+  |---|---|---|---|
+  | **passage 150×6** | **8.80** | **0.630** | **0.97** |
+  | whole-doc 900×1 (same text budget) | 8.73 | 0.612 | 0.91 |
+  | whole-doc uncapped (naive) | 7.77 | 0.535 | 0.84 |
+
+  vs the clean same-budget whole-doc control: **+2.9 % nDCG\*, +6 pp success@10**;
+  vs naive whole-doc: **+17.8 % / +13 pp**. A deeper probe (150×10) reached perfect
+  **success@10 = 1.00** but *lowered* DCG/nDCG (more passages → more max-pool false
+  positives demote the canonical doc) — so **150×6 is the shipped default**: best
+  ranking quality, near-perfect recall.
+- **Cost**: ~64.9k passage vectors vs 12k whole-doc → the on-disk index grows
+  ~212 MB→406 MB and the **first** serve start rebuilds the HNSW once (~3 min for
+  65k vectors); thereafter the sidecar matches (essential cards are baked in) and
+  load is instant. **72 tests green**, warning-free.

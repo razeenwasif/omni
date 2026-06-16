@@ -30,7 +30,7 @@ use std::io;
 use std::path::Path;
 
 const MANIFEST_MAGIC: &[u8; 8] = b"OMNIDIR\x07"; // magic + format version 7
-const SEG_MAGIC: &[u8; 4] = b"OSG4"; // layout v4: + per-doc publish time (freshness)
+const SEG_MAGIC: &[u8; 4] = b"OSG5"; // layout v5: per-doc passage embeddings (dim + count)
 
 // ---- public API ------------------------------------------------------------
 
@@ -123,12 +123,20 @@ pub fn load_ann(index: &mut Index, dir: &Path) -> bool {
     let keep_ram = !index.ann_lazy(); // lazy mode reads vectors on demand, none in RAM
     let graph = {
         let idx: &Index = index; // immutable reborrow, scoped to the rehydrate
-        crate::hnsw::Hnsw::from_bytes(&bytes[8..], keep_ram, |(s, l)| {
-            let seg = idx.segments().get(s)?;
-            if l >= seg.total_docs() || seg.docs[l].emb_len == 0 {
-                return None;
+                                 // Nodes are passages, grouped by doc, so a 1-entry cache makes rehydrating
+                                 // a doc's passage vectors O(decode-once-per-doc) instead of per-passage.
+        let mut cache: Option<((usize, usize), Vec<Vec<f32>>)> = None;
+        crate::hnsw::Hnsw::from_bytes(&bytes[8..], keep_ram, |(s, l), pi| {
+            if cache.as_ref().map(|(a, _)| *a) != Some((s, l)) {
+                let seg = idx.segments().get(s)?;
+                if l >= seg.total_docs() {
+                    return None;
+                }
+                cache = Some(((s, l), seg.passages(l)));
             }
-            Some(seg.embedding(l).into_owned())
+            cache
+                .as_ref()
+                .and_then(|(_, ps)| ps.get(pi as usize).cloned())
         })
     };
     match graph {
@@ -210,9 +218,11 @@ fn encode_segment(seg: &Segment) -> Vec<u8> {
         write_varint(&mut buf, doc.len_body as u64);
         write_varint(&mut buf, doc.content_hash);
         write_varint(&mut buf, doc.published.max(0) as u64); // 0 = unknown
-        write_varint(&mut buf, doc.embedding.len() as u64); // emb_len
-                                                            // --- cold fields (offset recorded by the loader from here) ---
+        write_varint(&mut buf, doc.emb_len as u64); // per-passage dim
+        write_varint(&mut buf, doc.n_passages as u64); // passage count
+                                                       // --- cold fields (offset recorded by the loader from here) ---
         write_str(&mut buf, &doc.text);
+        // Flat passage vectors: n_passages × emb_len f32.
         for &f in &doc.embedding {
             buf.extend_from_slice(&f.to_le_bytes());
         }
@@ -294,16 +304,17 @@ pub(crate) fn decode_doc_text(bytes: &[u8], offset: usize) -> String {
     r.read_str().unwrap_or_default()
 }
 
-/// Decode a doc's cold `embedding` (`emb_len` f32s) — skips `text` first.
-pub(crate) fn decode_doc_embedding(bytes: &[u8], offset: usize, emb_len: usize) -> Vec<f32> {
+/// Decode a doc's cold passage-embedding blob (`count` f32s = n_passages × dim) —
+/// skips `text` first.
+pub(crate) fn decode_doc_embedding(bytes: &[u8], offset: usize, count: usize) -> Vec<f32> {
     let mut r = Cursor {
         data: bytes,
         pos: offset,
     };
     let text_len = r.read_varint().unwrap_or(0) as usize;
     r.pos += text_len; // skip text
-    let mut v = Vec::with_capacity(emb_len);
-    for _ in 0..emb_len {
+    let mut v = Vec::with_capacity(count);
+    for _ in 0..count {
         match r.read_f32() {
             Ok(f) => v.push(f),
             Err(_) => break,
@@ -339,11 +350,12 @@ fn parse_seg_header(
         let content_hash = r.read_varint()?;
         let published = r.read_varint()? as i64;
         let emb_len = r.read_varint()? as u32;
+        let n_passages = r.read_varint()? as u32;
         // Cold fields start here; record the offset, then skip them.
         let cold_offset = r.pos;
         let text_len = r.read_varint()? as usize;
         r.pos += text_len; // skip text
-        r.pos += emb_len as usize * 4; // skip embedding f32s
+        r.pos += emb_len as usize * n_passages as usize * 4; // skip passage f32s
         if r.pos > bytes.len() {
             return Err(bad("segment doc record runs past end of file"));
         }
@@ -360,6 +372,7 @@ fn parse_seg_header(
                 deleted: false,
                 embedding: Vec::new(),
                 emb_len,
+                n_passages,
                 published,
             },
             cold_offset,
