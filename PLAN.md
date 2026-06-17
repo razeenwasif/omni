@@ -937,3 +937,26 @@ generative answer on top of the extractive one.
   `server::stream_answer` writes the SSE frames straight to the client socket
   (`TCP_NODELAY` so tokens hit the wire immediately, stops if the client hangs up).
   This is what lets Flux's omnibox render the answer token-by-token.
+
+### Phase 35 — Passage overlap: a tunable knob, measured *not* worth defaulting ✅
+Non-overlapping windows can split a sentence (and its answer) across a boundary so
+it's strong in neither passage. Added **overlap** to the chunker: adjacent windows
+share `OVERLAP` words (stride = `words_per − overlap`), env-tunable as `OMNI_OVERLAP`.
+Default stays **0** — identical to the prior contiguous behavior, so the live index
+(built overlap-free) still re-chunks in alignment; no rebuild forced.
+- **A/B (shared pool, `compare.py`, sw=2.0, 32 queries)** at *equal coverage* —
+  baseline (overlap 0, 150×6, ~900 words, 64.9k vectors) vs overlap (40, 150×8,
+  ~920 words, 85.2k vectors):
+
+  | index | DCG@10 | nDCG@10\* | success@10 |
+  |---|---|---|---|
+  | baseline (overlap 0) | **8.80** | 0.638 | 0.97 |
+  | overlap 40, 150×8 | 8.67 | **0.642** | 0.97 |
+
+  nDCG +0.6 %, DCG −1.5 %, success identical — opposite-signed, sub-noise over 32
+  queries: **no real ranking gain**, for a **+31 % vector cost** (storage, embed
+  time, ANN build). So overlap ships as a *knob*, not a default. (Its plausible
+  upside — cleaner extracted answer passages — isn't what nDCG measures; the
+  extractive answer already returns a full ~150-word best passage, so boundary
+  splits rarely lose the answer.) The harness again stopped a costly non-win.
+  **78 tests green.**

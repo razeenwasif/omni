@@ -71,6 +71,15 @@ is visible in real time. UI is vanilla JS/CSS baked into the binary (`ui/`). Omn
 still owns only the results + dashboard surfaces; `/` stays a branded search box
 (the new-tab start page is Flux's own). Below still holds.
 
+## Status: Phase 35 (passage overlap — a tunable, not a default) ✅
+
+Added overlapping passage windows (adjacent windows share `OMNI_OVERLAP` words, so a
+sentence straddling a boundary isn't split out of both). Default is **0** (identical
+to the prior behavior; no rebuild forced). An apples-to-apples A/B at equal coverage
+(`scripts/compare.py`, shared pool) found it a **wash for retrieval** — nDCG +0.6%,
+DCG −1.5%, success@10 unchanged — at a **+31% vector cost**, so it stays an opt-in
+knob rather than the default. The eval harness stopping a costly non-win, again.
+
 ## Status: Phase 34 (general sites + generative RAG) ✅
 
 The curated launch cards grew **9 → 34** — alongside the reference sites are the

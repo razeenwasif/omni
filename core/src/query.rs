@@ -389,8 +389,8 @@ fn best_passage(seg: &Segment, local: usize, qv: &[f32]) -> Option<(usize, f32)>
 /// whole passage; otherwise it's truncated.
 fn passage_text(seg: &Segment, local: usize, i: usize, max_words: usize) -> Option<String> {
     let text = seg.text(local);
-    let (words_per, max) = crate::passages::params();
-    let p = crate::passages::chunk(text.as_ref(), words_per, max)
+    let (words_per, overlap, max) = crate::passages::params();
+    let p = crate::passages::chunk(text.as_ref(), words_per, overlap, max)
         .into_iter()
         .nth(i)?;
     let p = if max_words == 0 {

@@ -284,7 +284,7 @@ impl Index {
             doc: usize,
             prompts: Vec<String>,
         }
-        let (words_per, max_passages) = crate::passages::params();
+        let (words_per, overlap, max_passages) = crate::passages::params();
         let mut work: Vec<Work> = Vec::new();
         for (si, seg) in self.segments.iter().enumerate() {
             if seg.is_lazy() {
@@ -294,7 +294,7 @@ impl Index {
                 if doc.deleted || doc.emb_len > 0 {
                     continue;
                 }
-                let passages = crate::passages::chunk(&doc.text, words_per, max_passages);
+                let passages = crate::passages::chunk(&doc.text, words_per, overlap, max_passages);
                 if passages.is_empty() {
                     continue;
                 }
