@@ -12,6 +12,27 @@ results and would otherwise duplicate it.
 | `style.css` | Results-page theme, matching Flux's **Royal Velvet × Liquid Glass** tokens (velvet gradient, glass cards, royal/violet/teal/magenta accents, Inter). |
 | `omni.js` | Progressive-enhancement omnibox: live autocomplete dropdown over `/ac` with keyboard nav. The page works without it (plain GET form). |
 
+## Autocomplete
+
+The `/ac` endpoint returns OpenSearch list JSON:
+
+```json
+["query", ["suggestion 1", "suggestion 2"]]
+```
+
+Suggestions are ranked from three sources:
+
+1. Full queries issued during the current server session, ranked by frequency
+   and recency.
+2. Indexed title phrases, used before the session has learned enough.
+3. Last-token title-word completion, preserving the original behavior for
+   partial words like `rust owne`.
+
+Only normal HTML `/search` requests teach the in-memory session history.
+Programmatic/eval requests with `fmt=json` and `!bang` redirects are ignored.
+The history is deliberately process-local and resets when the Omni server
+restarts.
+
 ## How it's served
 
 Both files are baked into the `omni` binary at compile time via `include_str!`

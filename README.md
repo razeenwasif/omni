@@ -61,6 +61,17 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 36 (session-aware autocomplete) ✅
+
+`/ac` is no longer just title-token prefix completion. Omni now learns full
+queries issued during the current server session and ranks them ahead of indexed
+fallbacks by frequency and recency. If there is no learned match, suggestions
+fall back to indexed title phrases, then the older last-token title-word
+completion, so existing Flux omnibox behavior still works. HTML search requests
+teach the suggester; `fmt=json` eval/API calls and `!bang` redirects are ignored.
+The session query memory is in-process only and resets on restart. Below still
+holds.
+
 ## Status: Phase 20 (index dashboard UI) ✅
 
 A live dashboard at **`GET /dashboard`** in Flux's Royal Velvet × Liquid Glass

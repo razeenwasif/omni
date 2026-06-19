@@ -229,7 +229,11 @@ fn route(path: &str, index: &Index, suggester: &Suggester) -> Reply {
             Some(url) => Reply::Redirect(url),
             None => {
                 let opts = parse_search_opts(query_str);
-                if query_param(query_str, "fmt").as_deref() == Some("json") {
+                let json_fmt = query_param(query_str, "fmt").as_deref() == Some("json");
+                if !q.is_empty() && !json_fmt {
+                    suggester.record_query(&q);
+                }
+                if json_fmt {
                     let k = query_param(query_str, "k")
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(20usize)
