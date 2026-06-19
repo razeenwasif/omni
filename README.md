@@ -61,6 +61,18 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 40 (result diversity + URL dedupe) ✅
+
+The final ranking pass now collapses obvious duplicate URL variants (scheme,
+`www.`, fragment, trailing-slash differences) and softly diversifies a
+host-dominated first page. It only interleaves alternatives when one host clearly
+dominates the requested top-K and other hosts are available; all-single-host
+corpora and explicit site queries (`site:` or the named host in the query) keep
+their original order. This happens after lexical/semantic fusion and optional
+reranking, so relevance scoring remains intact while the visible results avoid
+unhelpful same-domain walls. Covered by URL-dedupe, host-diversity, and
+site-specific opt-out tests. Below still holds.
+
 ## Status: Phase 39 (query-sensitive freshness) ✅
 
 Freshness is now query-aware. Dated documents still get only the original mild

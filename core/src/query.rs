@@ -11,7 +11,9 @@
 //!   5. Fold in **PageRank** as a mild, query-independent authority multiplier.
 //!   6. Apply a mild freshness boost; make it stronger only for queries that
 //!      explicitly ask for recent/version/security/release material.
-//!   7. Build a query-biased, highlighted snippet and return the top-K.
+//!   7. Collapse obvious URL variants and softly diversify host-dominated first
+//!      pages, unless the query explicitly names a site.
+//!   8. Build a query-biased, highlighted snippet and return the top-K.
 //!
 //! This is the two-phase "cheap recall → rich re-rank" architecture: BM25F+WAND
 //! finds candidates, then proximity/PageRank/phrase signals reorder them.
@@ -24,6 +26,7 @@ use crate::segment::Segment;
 use crate::snippet;
 use crate::wand;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// A global document address: `(segment index, local doc id)`.
 type Addr = (usize, usize);
@@ -328,6 +331,7 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
         let qterms: HashSet<String> = parsed.terms.iter().cloned().collect();
         rerank_pool(index, query, &mut ranked, &qterms, qvec.as_deref(), &opts);
     }
+    dedupe_and_diversify(segs, query, &mut ranked, k);
     ranked.truncate(k);
 
     // 8. RAG answer mode: the top hit's best-matching passage, returned verbatim as
@@ -684,6 +688,113 @@ fn semantic_ranking(
     Some(scored.into_iter().map(|(a, _)| a).collect())
 }
 
+/// Final first-page shaping: collapse obvious URL variants, then interleave a
+/// dominated host with alternatives only when the query did not explicitly name
+/// that site. This avoids an entire first page from one domain while leaving
+/// site-specific searches and all-single-host corpora alone.
+fn dedupe_and_diversify(
+    segs: &[Arc<Segment>],
+    query: &str,
+    ranked: &mut Vec<(Addr, f64)>,
+    k: usize,
+) {
+    if ranked.is_empty() {
+        return;
+    }
+    dedupe_canonical_urls(segs, ranked);
+    diversify_hosts(segs, query, ranked, k);
+}
+
+fn dedupe_canonical_urls(segs: &[Arc<Segment>], ranked: &mut Vec<(Addr, f64)>) {
+    let mut seen = HashSet::new();
+    ranked.retain(|&((si, local), _)| {
+        let key = canonical_url(&segs[si].docs[local].url);
+        seen.insert(key)
+    });
+}
+
+fn diversify_hosts(segs: &[Arc<Segment>], query: &str, ranked: &mut Vec<(Addr, f64)>, k: usize) {
+    if k < 4 || ranked.len() <= k {
+        return;
+    }
+
+    let top = ranked.len().min(k);
+    let mut top_counts: HashMap<String, usize> = HashMap::new();
+    let mut all_hosts: HashSet<String> = HashSet::new();
+    for (i, &((si, local), _)) in ranked.iter().enumerate() {
+        if let Some(host) = url_host(&segs[si].docs[local].url) {
+            if i < top {
+                *top_counts.entry(host.clone()).or_insert(0) += 1;
+            }
+            all_hosts.insert(host);
+        }
+    }
+    if all_hosts.len() <= 1 {
+        return;
+    }
+
+    let Some((dominant, count)) = top_counts.iter().max_by_key(|(_, &n)| n) else {
+        return;
+    };
+    if *count <= top.div_ceil(2) || query_names_site(query, dominant) {
+        return;
+    }
+
+    let per_host_cap = (k / 3).max(2);
+    let mut selected = Vec::with_capacity(ranked.len());
+    let mut delayed = Vec::new();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+
+    for &item @ ((si, local), _) in ranked.iter() {
+        match url_host(&segs[si].docs[local].url) {
+            Some(host) => {
+                let n = counts.entry(host.clone()).or_insert(0);
+                if selected.len() < k && *n >= per_host_cap {
+                    delayed.push(item);
+                } else {
+                    *n += 1;
+                    selected.push(item);
+                }
+            }
+            None => selected.push(item),
+        }
+    }
+    selected.extend(delayed);
+    *ranked = selected;
+}
+
+fn query_names_site(query: &str, host: &str) -> bool {
+    let q = query.to_lowercase();
+    q.contains("site:") || q.contains(host)
+}
+
+fn url_host(url: &str) -> Option<String> {
+    let (_, rest) = url.split_once("://")?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if host.is_empty() {
+        return None;
+    }
+    let host = host.split('@').next_back().unwrap_or(host);
+    let host = host.split(':').next().unwrap_or(host);
+    let host = host.trim_start_matches("www.").to_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+fn canonical_url(url: &str) -> String {
+    let no_fragment = url.split('#').next().unwrap_or(url).trim();
+    if let Some(host) = url_host(no_fragment) {
+        let rest = no_fragment
+            .split_once("://")
+            .map(|(_, r)| r)
+            .unwrap_or(no_fragment);
+        let path_start = rest.find(['/', '?']).unwrap_or(rest.len());
+        let path = rest[path_start..].trim_end_matches('/');
+        format!("{host}{path}")
+    } else {
+        no_fragment.trim_end_matches('/').to_lowercase()
+    }
+}
+
 /// Weighted Reciprocal Rank Fusion: combine several rankings into one. An item's
 /// fused score is Σ wᵢ/(K + rankᵢ) over the rankings it appears in (rank 1-based).
 /// Robust and parameter-light — no score normalization needed; the per-ranking
@@ -840,6 +951,106 @@ mod tests {
         assert!(freshness_boost(365.0, fresh) < freshness_boost(30.0, fresh));
         assert!(freshness_boost(365.0, fresh) < 1.02);
         assert!(freshness_boost(365.0, background) > 1.03);
+    }
+
+    #[test]
+    fn canonical_url_dedupe_collapses_obvious_variants() {
+        let mut idx = Index::new();
+        idx.add_document(
+            "https://www.example.com/docs/rust/".into(),
+            "A".into(),
+            "rust docs",
+        );
+        idx.add_document(
+            "http://example.com/docs/rust#section".into(),
+            "B".into(),
+            "rust docs duplicate",
+        );
+        idx.add_document(
+            "https://other.example/docs/rust".into(),
+            "C".into(),
+            "rust docs other",
+        );
+        let mut ranked = vec![((0, 0), 1.0), ((0, 1), 0.9), ((0, 2), 0.8)];
+        dedupe_and_diversify(idx.segments(), "rust docs", &mut ranked, 10);
+        assert_eq!(ranked, vec![((0, 0), 1.0), ((0, 2), 0.8)]);
+    }
+
+    #[test]
+    fn host_diversity_interleaves_dominated_first_page() {
+        let mut idx = Index::new();
+        for i in 0..5 {
+            idx.add_document(
+                format!("https://docs.example.com/rust/{i}"),
+                format!("A{i}"),
+                "rust guide",
+            );
+        }
+        for host in [
+            "blog.example.net",
+            "reference.example.org",
+            "wiki.example.edu",
+        ] {
+            idx.add_document(
+                format!("https://{host}/rust"),
+                host.to_string(),
+                "rust guide",
+            );
+        }
+        let mut ranked = (0..8)
+            .map(|i| ((0, i), 1.0 - i as f64 * 0.01))
+            .collect::<Vec<_>>();
+        dedupe_and_diversify(idx.segments(), "rust guide", &mut ranked, 5);
+
+        let top_hosts: Vec<String> = ranked[..5]
+            .iter()
+            .filter_map(|&((si, local), _)| url_host(&idx.segments()[si].docs[local].url))
+            .collect();
+        assert_eq!(top_hosts[0], "docs.example.com");
+        assert_eq!(
+            top_hosts
+                .iter()
+                .filter(|&h| h == "docs.example.com")
+                .count(),
+            2
+        );
+        assert!(top_hosts.iter().any(|h| h == "blog.example.net"));
+        assert!(top_hosts.iter().any(|h| h == "reference.example.org"));
+        assert!(top_hosts.iter().any(|h| h == "wiki.example.edu"));
+    }
+
+    #[test]
+    fn host_diversity_skips_site_specific_queries() {
+        let mut idx = Index::new();
+        for i in 0..5 {
+            idx.add_document(
+                format!("https://docs.example.com/rust/{i}"),
+                format!("A{i}"),
+                "rust guide",
+            );
+        }
+        for host in [
+            "blog.example.net",
+            "reference.example.org",
+            "wiki.example.edu",
+        ] {
+            idx.add_document(
+                format!("https://{host}/rust"),
+                host.to_string(),
+                "rust guide",
+            );
+        }
+        let original = (0..8)
+            .map(|i| ((0, i), 1.0 - i as f64 * 0.01))
+            .collect::<Vec<_>>();
+        let mut ranked = original.clone();
+        dedupe_and_diversify(
+            idx.segments(),
+            "site:docs.example.com rust guide",
+            &mut ranked,
+            5,
+        );
+        assert_eq!(ranked, original);
     }
 
     #[test]
