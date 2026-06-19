@@ -61,6 +61,17 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 39 (query-sensitive freshness) ✅
+
+Freshness is now query-aware. Dated documents still get only the original mild
+recency tiebreak for ordinary reference queries, but explicit freshness intent
+(`latest`, `recent`, `current`, `news`, `changelog`, `release`, `update`,
+`version`, security/CVE/patch terms, or 20xx years) switches to a stronger,
+faster-decaying recency profile. Undated pages remain neutral rather than being
+penalized, so stable docs/reference searches are not pushed around just because a
+page lacks metadata. Covered by focused freshness intent/boost tests. Below still
+holds.
+
 ## Status: Phase 38 (local search/click telemetry) ✅
 
 Omni now has a local feedback loop for search quality. HTML result searches are

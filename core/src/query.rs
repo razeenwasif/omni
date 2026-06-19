@@ -9,7 +9,9 @@
 //!   4. If the query has phrases, **filter** to docs where the phrase terms are
 //!      positionally adjacent (true phrase match via the positional index).
 //!   5. Fold in **PageRank** as a mild, query-independent authority multiplier.
-//!   6. Build a query-biased, highlighted snippet and return the top-K.
+//!   6. Apply a mild freshness boost; make it stronger only for queries that
+//!      explicitly ask for recent/version/security/release material.
+//!   7. Build a query-biased, highlighted snippet and return the top-K.
 //!
 //! This is the two-phase "cheap recall → rich re-rank" architecture: BM25F+WAND
 //! finds candidates, then proximity/PageRank/phrase signals reorder them.
@@ -49,12 +51,30 @@ const PROXIMITY_WEIGHT: f64 = 2.0;
 const PAGERANK_WEIGHT: f64 = 0.5;
 
 /// How strongly recency nudges the order, and its decay scale. The boost is
-/// `1 + FRESHNESS_WEIGHT * exp(-age_days / FRESHNESS_TAU_DAYS)` for docs with a
-/// known publish date (undated docs are neutral). Kept small — relevance and
-/// authority dominate; freshness is only a gentle tiebreak (and many reference
-/// pages have no date, so it must never punish them).
-const FRESHNESS_WEIGHT: f64 = 0.10;
-const FRESHNESS_TAU_DAYS: f64 = 365.0;
+/// `1 + weight * exp(-age_days / tau_days)` for docs with a known publish date
+/// (undated docs are neutral). Background freshness stays small — relevance and
+/// authority dominate. Explicit freshness/version/security/release queries use a
+/// stronger, faster-decaying profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FreshnessIntent {
+    Background,
+    Fresh,
+}
+
+#[derive(Clone, Copy)]
+struct FreshnessProfile {
+    weight: f64,
+    tau_days: f64,
+}
+
+const BACKGROUND_FRESHNESS: FreshnessProfile = FreshnessProfile {
+    weight: 0.10,
+    tau_days: 365.0,
+};
+const EXPLICIT_FRESHNESS: FreshnessProfile = FreshnessProfile {
+    weight: 0.65,
+    tau_days: 90.0,
+};
 
 /// A parsed query: free terms plus phrases.
 struct ParsedQuery {
@@ -252,16 +272,17 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
         }
     }
 
-    // 4b. Freshness: a mild recency boost for docs with a known publish date.
+    // 4b. Freshness: a mild recency boost for dated docs, strengthened only when
+    //     the query itself asks for recent/version/security/release material.
     //     Undated docs (most reference pages) are left neutral, never penalized.
     let now = now_unix();
     if now > 0 {
+        let freshness = freshness_profile(freshness_intent(query));
         for (&(si, local), score) in scores.iter_mut() {
             let published = segs[si].docs[local].published;
             if published > 0 {
                 let age_days = (now - published).max(0) as f64 / 86_400.0;
-                let recency = (-age_days / FRESHNESS_TAU_DAYS).exp();
-                *score *= 1.0 + FRESHNESS_WEIGHT * recency;
+                *score *= freshness_boost(age_days, freshness);
             }
         }
     }
@@ -523,6 +544,58 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+fn freshness_profile(intent: FreshnessIntent) -> FreshnessProfile {
+    match intent {
+        FreshnessIntent::Background => BACKGROUND_FRESHNESS,
+        FreshnessIntent::Fresh => EXPLICIT_FRESHNESS,
+    }
+}
+
+fn freshness_boost(age_days: f64, profile: FreshnessProfile) -> f64 {
+    1.0 + profile.weight * (-age_days.max(0.0) / profile.tau_days).exp()
+}
+
+fn freshness_intent(query: &str) -> FreshnessIntent {
+    let tokens = analyze::tokenize(query);
+    for t in &tokens {
+        if matches!(
+            t.as_str(),
+            "latest"
+                | "recent"
+                | "current"
+                | "today"
+                | "news"
+                | "changelog"
+                | "release"
+                | "releases"
+                | "released"
+                | "update"
+                | "updates"
+                | "updated"
+                | "version"
+                | "versions"
+                | "security"
+                | "cve"
+                | "vulnerability"
+                | "vulnerabilities"
+                | "patch"
+                | "patched"
+                | "breaking"
+                | "roadmap"
+        ) {
+            return FreshnessIntent::Fresh;
+        }
+        if t.len() == 4 {
+            if let Ok(year) = t.parse::<u16>() {
+                if (2020..=2099).contains(&year) {
+                    return FreshnessIntent::Fresh;
+                }
+            }
+        }
+    }
+    FreshnessIntent::Background
+}
+
 /// Reciprocal Rank Fusion constant (standard default).
 const RRF_K: f64 = 60.0;
 
@@ -737,6 +810,36 @@ mod tests {
         assert_eq!(fused[0].0, 5);
         // Every input doc appears in the fused output exactly once.
         assert_eq!(fused.len(), 5);
+    }
+
+    #[test]
+    fn freshness_intent_detects_recent_queries() {
+        assert_eq!(
+            freshness_intent("latest rust release notes"),
+            FreshnessIntent::Fresh
+        );
+        assert_eq!(
+            freshness_intent("openssl cve 2026 patch"),
+            FreshnessIntent::Fresh
+        );
+        assert_eq!(
+            freshness_intent("python asyncio event loop concurrency"),
+            FreshnessIntent::Background
+        );
+        assert_eq!(
+            freshness_intent("rust ownership borrowing lifetimes"),
+            FreshnessIntent::Background
+        );
+    }
+
+    #[test]
+    fn explicit_freshness_boost_is_stronger_and_decays_faster() {
+        let fresh = freshness_profile(FreshnessIntent::Fresh);
+        let background = freshness_profile(FreshnessIntent::Background);
+        assert!(freshness_boost(0.0, fresh) > freshness_boost(0.0, background));
+        assert!(freshness_boost(365.0, fresh) < freshness_boost(30.0, fresh));
+        assert!(freshness_boost(365.0, fresh) < 1.02);
+        assert!(freshness_boost(365.0, background) > 1.03);
     }
 
     #[test]
