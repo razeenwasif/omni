@@ -51,6 +51,11 @@ widen/narrow the crawl scope (the host allowlist defaults to those seeds' hosts)
   concurrently across *different* hosts.
 - **Dedupe**: URLs are normalized (lowercased host, no fragment, `/` default
   path) and tracked in a visited set.
+- **Readable extraction**: HTML is cleaned before indexing. The extractor removes
+  non-content blocks (`script`, `style`, `template`, SVG/canvas/iframe), prefers
+  `<main>`, `<article>`, `role=main`, and content/article wrappers, strips common
+  nav/footer/sidebar/cookie/ad/menu boilerplate, keeps headings/code/body text in
+  reading order, and decodes named plus numeric HTML entities.
 - **Output**: one `store/<hash>.doc` per page — see the doc-store format in
   `../PLAN.md` §7.
 
@@ -61,11 +66,14 @@ widen/narrow the crawl scope (the host allowlist defaults to those seeds' hosts)
 | `main.go` | CLI flags, config, entry point |
 | `crawl.go` | Frontier, worker pool, per-host rate gate, fetch loop |
 | `robots.go` | robots.txt fetch, parse, and Allow/Disallow/Crawl-delay logic |
-| `extract.go` | Title / visible text / outlink extraction from HTML |
+| `extract.go` | Title / readable text / publish date / outlink extraction from HTML |
+| `extract_test.go` | Fixture coverage for main-content selection, boilerplate removal, code preservation, and entity decoding. |
 | `store.go` | Writing `*.doc` records to the doc store |
 
 ## Checks
 
 ```sh
-go build ./... && go vet ./... && gofmt -l .
+GOCACHE=/tmp/omni-go-build-cache go test ./...
+GOCACHE=/tmp/omni-go-build-cache go vet ./...
+gofmt -l .
 ```

@@ -1,0 +1,102 @@
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestExtractKeepsMetadataAndLinks(t *testing.T) {
+	page := `<!doctype html>
+<html>
+  <head>
+    <title>Rust Guide</title>
+    <meta property="article:published_time" content="2026-06-18T10:00:00Z">
+  </head>
+  <body>
+    <main>
+      <h1>Rust Guide</h1>
+      <p>This guide explains ownership, borrowing, lifetimes, and safe memory management.</p>
+      <p>It has enough useful body text to be selected as readable main page content.</p>
+      <a href="/chapter-2">Next chapter</a>
+    </main>
+  </body>
+</html>`
+
+	got := extract("https://example.com/book/", page)
+	if got.Title != "Rust Guide" {
+		t.Fatalf("title mismatch: %q", got.Title)
+	}
+	if got.Published != "2026-06-18T10:00:00Z" {
+		t.Fatalf("published mismatch: %q", got.Published)
+	}
+	if len(got.Links) != 1 || got.Links[0] != "https://example.com/chapter-2" {
+		t.Fatalf("links mismatch: %#v", got.Links)
+	}
+	if !strings.Contains(got.Text, "ownership, borrowing, lifetimes") {
+		t.Fatalf("text mismatch: %q", got.Text)
+	}
+}
+
+func TestReadableTextPrefersMainAndDropsBoilerplate(t *testing.T) {
+	page := `<!doctype html>
+<html>
+  <head><title>Example</title></head>
+  <body>
+    <nav class="navbar">Products Pricing Login Docs</nav>
+    <aside class="sidebar">Related links that should not be indexed</aside>
+    <main>
+      <h1>Ownership and Borrowing</h1>
+      <p>Rust ownership explains who is responsible for values in memory.</p>
+      <p>Borrowing lets code use references without taking ownership of the value.</p>
+      <p>These rules keep programs memory safe without requiring a garbage collector.</p>
+    </main>
+    <footer>Copyright Contact Privacy Terms</footer>
+  </body>
+</html>`
+
+	text := readableText(page)
+	for _, want := range []string{
+		"Ownership and Borrowing",
+		"Rust ownership explains",
+		"Borrowing lets code use references",
+		"memory safe",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected extracted text to contain %q; got %q", want, text)
+		}
+	}
+	for _, noise := range []string{"Products Pricing Login", "Related links", "Copyright Contact"} {
+		if strings.Contains(text, noise) {
+			t.Fatalf("expected boilerplate %q to be removed; got %q", noise, text)
+		}
+	}
+}
+
+func TestReadableTextKeepsCodeBlocksInsideArticle(t *testing.T) {
+	page := `<article>
+  <h1>Fetch API</h1>
+  <p>The fetch function starts a request and returns a promise for the response.</p>
+  <pre><code>const res = await fetch("/api/search?q=rust")</code></pre>
+  <p>Applications can then inspect status codes, headers, and decoded JSON bodies.</p>
+</article>`
+
+	text := readableText(page)
+	for _, want := range []string{
+		"Fetch API",
+		"returns a promise",
+		`const res = await fetch("/api/search?q=rust")`,
+		"decoded JSON bodies",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected extracted text to contain %q; got %q", want, text)
+		}
+	}
+}
+
+func TestUnescapeEntitiesHandlesNamedDecimalAndHex(t *testing.T) {
+	got := collapse(`Rust &amp; Go &#39;search&#39; &#x1F50D; &nbsp; docs`)
+	want := "Rust & Go 'search' 🔍 docs"
+	if got != want {
+		t.Fatalf("entity decode mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}

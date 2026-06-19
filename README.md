@@ -61,6 +61,17 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 37 (crawler readability extraction) ✅
+
+The crawler's HTML text extraction is no longer a plain "strip every tag" pass.
+It now drops non-content blocks (`script`, `style`, `template`, SVG/canvas/iframe),
+prefers readable containers (`<main>`, `<article>`, `role=main`, content/article
+wrappers), strips common nav/footer/sidebar/cookie/ad/menu boilerplate, preserves
+headings/code/body text in reading order, and decodes named plus numeric HTML
+entities. This keeps the doc-store format unchanged while feeding cleaner text to
+BM25, snippets, passage embeddings, direct answers, and RAG grounding. Covered by
+crawler extraction fixtures. Below still holds.
+
 ## Status: Phase 36 (session-aware autocomplete) ✅
 
 `/ac` is no longer just title-token prefix completion. Omni now learns full
