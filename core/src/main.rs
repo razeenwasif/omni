@@ -31,6 +31,7 @@ mod segment;
 mod server;
 mod snippet;
 mod suggest;
+mod telemetry;
 mod wand;
 
 use std::path::PathBuf;

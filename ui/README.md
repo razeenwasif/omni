@@ -33,6 +33,23 @@ Programmatic/eval requests with `fmt=json` and `!bang` redirects are ignored.
 The history is deliberately process-local and resets when the Omni server
 restarts.
 
+## Telemetry
+
+Normal HTML result pages wrap result links with:
+
+```text
+/click?q=<query>&u=<target-url>
+```
+
+`/click` records an in-memory click signal, rejects unsafe non-http(s) redirect
+targets, then redirects to the original URL. The session telemetry is exposed in
+`/stats` as search counts, click counts, zero-result rate, average/p95 search
+latency, top queries, and top clicked URLs. `/dashboard` renders those fields in
+the stat cards and telemetry panels.
+
+Telemetry is local to the running Omni process and resets on restart.
+Programmatic/eval searches using `fmt=json` are not recorded.
+
 ## How it's served
 
 Both files are baked into the `omni` binary at compile time via `include_str!`

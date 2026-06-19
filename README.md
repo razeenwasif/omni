@@ -61,6 +61,18 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 38 (local search/click telemetry) ✅
+
+Omni now has a local feedback loop for search quality. HTML result searches are
+timed and counted in-process, including zero-result rate, top session queries,
+average/p95 latency, and clicked result URLs. Result links route through
+`GET /click?q=...&u=...`, record the click, then redirect to the original page;
+unsafe non-http(s) or header-injection URLs are rejected. `GET /stats` exposes
+the telemetry alongside index health, and `/dashboard` renders search/click
+panels. `fmt=json` eval/API searches still stay out of user-facing session
+learning. Telemetry is intentionally process-local and resets on restart. Below
+still holds.
+
 ## Status: Phase 37 (crawler readability extraction) ✅
 
 The crawler's HTML text extraction is no longer a plain "strip every tag" pass.

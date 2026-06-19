@@ -15,10 +15,12 @@ use crate::index::Index;
 use crate::live::{BgMerge, LiveIndex};
 use crate::query;
 use crate::suggest::Suggester;
+use crate::telemetry::Telemetry;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// What a route produces: a normal page/JSON, or a redirect (used by bangs).
 enum Reply {
@@ -53,6 +55,7 @@ pub fn serve(
     // background merge never adds/removes live docs, so this stays valid across
     // swaps and needn't be rebuilt.
     let suggester = Arc::new(Suggester::build(&live.snapshot()));
+    let telemetry = Arc::new(Telemetry::new());
     println!(
         "omni: serving on http://{addr}  ({} docs indexed)",
         live.snapshot().doc_count()
@@ -79,10 +82,11 @@ pub fn serve(
             Ok(s) => {
                 let live = Arc::clone(&live);
                 let sug = Arc::clone(&suggester);
+                let tel = Arc::clone(&telemetry);
                 let dir = dir.clone();
                 // One thread per connection keeps Phase 1 simple and dependency-free.
                 std::thread::spawn(move || {
-                    let _ = handle(s, live, sug, dir);
+                    let _ = handle(s, live, sug, tel, dir);
                 });
             }
             Err(e) => eprintln!("omni: accept error: {e}"),
@@ -95,6 +99,7 @@ fn handle(
     mut stream: TcpStream,
     live: Arc<LiveIndex>,
     suggester: Arc<Suggester>,
+    telemetry: Arc<Telemetry>,
     dir: Option<Arc<PathBuf>>,
 ) -> std::io::Result<()> {
     let mut reader = BufReader::new(&stream);
@@ -148,7 +153,7 @@ fn handle(
         // Cheap snapshot for this request; a concurrent background swap won't
         // disturb it.
         let index = live.snapshot();
-        route(&path, &index, &suggester)
+        route(&path, &index, &suggester, &telemetry)
     };
 
     write_reply(&mut stream, reply)
@@ -189,7 +194,7 @@ fn write_reply(stream: &mut TcpStream, reply: Reply) -> std::io::Result<()> {
     stream.flush()
 }
 
-fn route(path: &str, index: &Index, suggester: &Suggester) -> Reply {
+fn route(path: &str, index: &Index, suggester: &Suggester, telemetry: &Telemetry) -> Reply {
     let (route, query_str) = match path.split_once('?') {
         Some((r, q)) => (r, q),
         None => (path, ""),
@@ -222,8 +227,18 @@ fn route(path: &str, index: &Index, suggester: &Suggester) -> Reply {
                 .unwrap_or_else(|| crate::rag::DEFAULT_MODEL.to_string());
             json("200 OK", answer_json(index, &q, &model))
         }
-        "/stats" => json("200 OK", stats_json(index)),
+        "/stats" => json("200 OK", stats_json(index, telemetry)),
         "/sites" => json("200 OK", sites_json()),
+        "/click" => match query_param(query_str, "u").filter(|u| safe_redirect_url(u)) {
+            Some(url) => {
+                telemetry.record_click(&q, &url);
+                Reply::Redirect(url)
+            }
+            None => json(
+                "400 Bad Request",
+                "{\"error\":\"missing or unsafe redirect url\"}".to_string(),
+            ),
+        },
         // A `!bang` query redirects to the target site; otherwise normal search.
         "/search" => match crate::bangs::resolve(&q) {
             Some(url) => Reply::Redirect(url),
@@ -243,7 +258,7 @@ fn route(path: &str, index: &Index, suggester: &Suggester) -> Reply {
                     page(
                         "200 OK",
                         "text/html; charset=utf-8",
-                        results_page(index, &q, opts),
+                        results_page(index, &q, opts, Some(telemetry)),
                     )
                 }
             }
@@ -251,7 +266,7 @@ fn route(path: &str, index: &Index, suggester: &Suggester) -> Reply {
         "/" => page(
             "200 OK",
             "text/html; charset=utf-8",
-            results_page(index, "", query::SearchOpts::default()),
+            results_page(index, "", query::SearchOpts::default(), None),
         ),
         _ => page(
             "404 Not Found",
@@ -366,6 +381,30 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else if b == b' ' {
+            out.push('+');
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn safe_redirect_url(url: &str) -> bool {
+    (url.starts_with("http://") || url.starts_with("https://"))
+        && !url.contains('\r')
+        && !url.contains('\n')
+}
+
+fn click_url(q: &str, url: &str) -> String {
+    format!("/click?q={}&u={}", percent_encode(q), percent_encode(url))
+}
+
 fn hex_val(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
@@ -408,11 +447,12 @@ fn sites_json() -> String {
     format!("[{}]", items.join(","))
 }
 
-fn stats_json(index: &Index) -> String {
+fn stats_json(index: &Index, telemetry: &Telemetry) -> String {
     let live = index.doc_count();
     let total = index.total_docs();
     let fs = index.field_stats();
     let emb = index.embedder();
+    let tel = telemetry.snapshot();
 
     // Per-segment sizes — makes the tiered merge / background merge visible.
     let sizes: Vec<String> = index
@@ -453,24 +493,62 @@ fn stats_json(index: &Index) -> String {
         })
         .collect();
 
+    let top_queries: Vec<String> = tel
+        .top_queries
+        .iter()
+        .map(|q| {
+            format!(
+                "{{\"query\":{},\"count\":{},\"zero_results\":{},\"avg_results\":{:.2},\"avg_ms\":{:.2}}}",
+                json_string(&q.query),
+                q.count,
+                q.zero_results,
+                q.avg_results,
+                q.avg_ms,
+            )
+        })
+        .collect();
+    let top_clicks: Vec<String> = tel
+        .top_clicks
+        .iter()
+        .map(|c| {
+            format!(
+                "{{\"url\":{},\"clicks\":{},\"last_query\":{}}}",
+                json_string(&c.url),
+                c.clicks,
+                json_string(&c.last_query),
+            )
+        })
+        .collect();
+
     format!(
         "{{\"live_docs\":{live},\"total_docs\":{total},\"tombstones\":{tomb},\
           \"segments\":{segs},\"embedded\":{embd},\"ann\":{ann},\"ann_vectors\":{annv},\
           \"dated\":{dated},\
           \"embedder_kind\":{ek},\"embedder_dim\":{ed},\
+          \"searches\":{searches},\"clicks\":{clicks},\"zero_results\":{zeros},\
+          \"zero_result_rate\":{zrate:.4},\"avg_search_ms\":{avgms:.2},\"p95_search_ms\":{p95},\
           \"avg_title_len\":{atl:.2},\"avg_body_len\":{abl:.2},\
-          \"segment_sizes\":[{sizes}],\"top_docs\":[{top}]}}",
+          \"segment_sizes\":[{sizes}],\"top_docs\":[{top}],\
+          \"top_queries\":[{top_queries}],\"top_clicks\":[{top_clicks}]}}",
         tomb = total - live,
         segs = index.segment_count(),
         embd = emb.enabled(),
         ann = index.ann().is_some(),
         annv = index.ann().map(|a| a.len()).unwrap_or(0),
+        searches = tel.searches,
+        clicks = tel.clicks,
+        zeros = tel.zero_results,
+        zrate = tel.zero_results as f64 / tel.searches.max(1) as f64,
+        avgms = tel.avg_search_ms,
+        p95 = tel.p95_search_ms,
         ek = json_string(emb.kind_name()),
         ed = emb.dim,
         atl = fs.avg_title_len,
         abl = fs.avg_body_len,
         sizes = sizes.join(","),
         top = top.join(","),
+        top_queries = top_queries.join(","),
+        top_clicks = top_clicks.join(","),
     )
 }
 
@@ -618,7 +696,12 @@ fn stream_answer(
 }
 
 /// Render the HTML results page.
-fn results_page(index: &Index, q: &str, opts: query::SearchOpts) -> String {
+fn results_page(
+    index: &Index,
+    q: &str,
+    opts: query::SearchOpts,
+    telemetry: Option<&Telemetry>,
+) -> String {
     let hits = if q.is_empty() {
         Vec::new()
     } else {
@@ -627,7 +710,12 @@ fn results_page(index: &Index, q: &str, opts: query::SearchOpts) -> String {
             answer: true,
             ..opts
         };
-        query::search_with(index, q, 20, opts)
+        let start = Instant::now();
+        let hits = query::search_with(index, q, 20, opts);
+        if let Some(t) = telemetry {
+            t.record_search(q, hits.len(), start.elapsed());
+        }
+        hits
     };
 
     // Body: a centered landing when there's no query, otherwise a meta line and
@@ -649,6 +737,7 @@ fn results_page(index: &Index, q: &str, opts: query::SearchOpts) -> String {
     } else {
         // Featured direct answer (the top hit's best-matching passage), if confident.
         if let Some((ans, top)) = hits.first().and_then(|h| h.answer.as_ref().map(|a| (a, h))) {
+            let click = click_url(q, &top.url);
             body.push_str(&format!(
                 "<div class=\"answer\">\
                    <div class=\"answer-label\">Direct answer</div>\
@@ -656,20 +745,22 @@ fn results_page(index: &Index, q: &str, opts: query::SearchOpts) -> String {
                    <a class=\"answer-src\" href=\"{url}\">{title} →</a>\
                  </div>",
                 text = html_escape(ans),
-                url = html_escape(&top.url),
+                url = html_escape(&click),
                 title = html_escape(&top.title),
             ));
         }
         body.push_str(&format!("<div class=\"meta\">{} results</div>", hits.len()));
         for h in &hits {
+            let click = click_url(q, &h.url);
             body.push_str(&format!(
                 "<div class=\"result\">\
                    <a class=\"title\" href=\"{url}\">{title}</a>\
-                   <div class=\"url\">{url}</div>\
+                   <div class=\"url\">{raw_url}</div>\
                    <div class=\"snippet\">{snippet}</div>\
                    <div class=\"score\">score {score:.3}</div>\
                  </div>",
-                url = html_escape(&h.url),
+                url = html_escape(&click),
+                raw_url = html_escape(&h.url),
                 title = html_escape(&h.title),
                 // Snippet is already HTML-safe (escaped + <mark> highlights).
                 snippet = h.snippet,
@@ -749,6 +840,10 @@ fn dashboard_page() -> String {
              <div class=\"segbars\" id=\"segbars\"></div></div>\
            <div class=\"panel\"><div class=\"panel-h\">Essential sites <span class=\"panel-note\">type <code>!key</code> in search to jump</span></div>\
              <ul class=\"shortcuts\">{shortcuts}</ul></div>\
+           <div class=\"panel\"><div class=\"panel-h\">Search telemetry <span class=\"panel-note\">current server session</span></div>\
+             <ol class=\"toplist\" id=\"querylist\"></ol></div>\
+           <div class=\"panel\"><div class=\"panel-h\">Clicked results <span class=\"panel-note\">current server session</span></div>\
+             <ol class=\"toplist\" id=\"clicklist\"></ol></div>\
            <div class=\"panel\"><div class=\"panel-h\">Top authority · PageRank</div>\
              <ol class=\"toplist\" id=\"toplist\"></ol></div>\
            <div class=\"dash-foot\" id=\"foot\">connecting…</div>\
