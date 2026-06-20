@@ -66,6 +66,19 @@ The results page renders Google-style vertical tabs for:
 Submitting from a non-All tab preserves the active `type=` value. JSON clients can
 use the same parameter with `fmt=json`.
 
+## Rich Answer Cards
+
+The results page can render local answer cards above normal results:
+
+| Card | Example queries | Source |
+|---|---|---|
+| Calculator | `2+2`, `sqrt(16)`, `2 * (5 + 3)`, `2^8` | Local expression parser. |
+| Unit conversion | `10 km to miles`, `5 kg in lb`, `32 f to c` | Local conversion table. |
+| Definition | `define entropy`, `what is ownership` | Existing extractive answer from the top result. |
+
+Weather-style queries are detected as a future hook, but Omni does not render
+weather data until a local or configured weather source exists.
+
 ## Telemetry
 
 Normal HTML result pages wrap result links with:

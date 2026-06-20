@@ -11,6 +11,7 @@
 
 mod analyze;
 mod bangs;
+mod cards;
 mod corpus;
 mod docstore;
 mod embed;

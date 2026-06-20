@@ -735,25 +735,41 @@ fn results_page(
              <a class=\"hint-link\" href=\"/dashboard\">dashboard →</a></p>",
         );
     } else if hits.is_empty() {
+        if let Some(card) = crate::cards::local_card(q) {
+            body.push_str(&render_rich_card(&card, None));
+        }
         body.push_str(&format!(
             "<p class=\"hint\">No {} results for <strong>{}</strong>.</p>",
             html_escape(vertical.label()),
             html_escape(q)
         ));
     } else {
+        if let Some(card) = crate::cards::local_card(q) {
+            body.push_str(&render_rich_card(&card, None));
+        }
         // Featured direct answer (the top hit's best-matching passage), if confident.
         if let Some((ans, top)) = hits.first().and_then(|h| h.answer.as_ref().map(|a| (a, h))) {
             let click = click_url(q, &top.url);
-            body.push_str(&format!(
-                "<div class=\"answer\">\
-                   <div class=\"answer-label\">Direct answer</div>\
-                   <div class=\"answer-text\">{text}</div>\
-                   <a class=\"answer-src\" href=\"{url}\">{title} →</a>\
-                 </div>",
-                text = html_escape(ans),
-                url = html_escape(&click),
-                title = html_escape(&top.title),
-            ));
+            if crate::cards::is_definition_query(q) {
+                let card = crate::cards::RichCard {
+                    label: "Definition",
+                    title: q.to_string(),
+                    value: ans.clone(),
+                    detail: None,
+                };
+                body.push_str(&render_rich_card(&card, Some((&click, &top.title))));
+            } else {
+                body.push_str(&format!(
+                    "<div class=\"answer\">\
+                       <div class=\"answer-label\">Direct answer</div>\
+                       <div class=\"answer-text\">{text}</div>\
+                       <a class=\"answer-src\" href=\"{url}\">{title} →</a>\
+                     </div>",
+                    text = html_escape(ans),
+                    url = html_escape(&click),
+                    title = html_escape(&top.title),
+                ));
+            }
         }
         body.push_str(&format!(
             "<div class=\"meta\">{} {} results</div>",
@@ -857,6 +873,36 @@ fn vertical_tabs(q: &str, active: query::Vertical) -> String {
         })
         .collect();
     format!("<nav class=\"tabs\" aria-label=\"Search verticals\">{items}</nav>")
+}
+
+fn render_rich_card(card: &crate::cards::RichCard, source: Option<(&str, &str)>) -> String {
+    let detail = card
+        .detail
+        .as_ref()
+        .map(|d| format!("<div class=\"rich-detail\">{}</div>", html_escape(d)))
+        .unwrap_or_default();
+    let source = source
+        .map(|(url, title)| {
+            format!(
+                "<a class=\"answer-src\" href=\"{}\">{} →</a>",
+                html_escape(url),
+                html_escape(title)
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "<div class=\"rich-card\">\
+           <div class=\"answer-label\">{label}</div>\
+           <div class=\"rich-title\">{title}</div>\
+           <div class=\"rich-value\">{value}</div>\
+           {detail}{source}\
+         </div>",
+        label = html_escape(card.label),
+        title = html_escape(&card.title),
+        value = html_escape(&card.value),
+        detail = detail,
+        source = source,
+    )
 }
 
 /// The index dashboard: a glass-card view of live index health (segments, docs,

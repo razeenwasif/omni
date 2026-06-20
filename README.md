@@ -61,6 +61,18 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 43 (local rich answer cards) ✅
+
+The results page now renders deterministic rich answer cards above normal
+results. Calculator cards handle arithmetic with precedence, parentheses,
+exponents, unary signs, and `sqrt(...)`; unit-conversion cards handle common
+length, mass, and temperature conversions (`10 km to miles`, `5 kg in lb`,
+`32 f to c`). Definition queries (`define ...`, `definition of ...`,
+`what is ...`) reuse Omni's existing extractive answer as a definition-styled
+card with source attribution. Weather-style queries are detected as a future hook
+but do not render fabricated data until Omni has a weather source. Covered by
+calculator/conversion/detection tests. Below still holds.
+
 ## Status: Phase 42 (search vertical tabs) ✅
 
 The results page now has Google-style vertical tabs backed by a real `type=`

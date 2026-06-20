@@ -224,6 +224,34 @@ body {
 }
 .answer-src:hover { color: #b3a6ff; text-decoration: underline; }
 
+.rich-card {
+  padding: 18px 20px;
+  margin: 4px 0 22px;
+  border-radius: var(--radius-card);
+  background: linear-gradient(135deg, rgba(47, 243, 255, 0.12), rgba(123, 97, 255, 0.07));
+  border: 1px solid rgba(47, 243, 255, 0.26);
+  box-shadow: 0 2px 18px rgba(47, 243, 255, 0.08);
+}
+.rich-title {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.4;
+  margin-bottom: 6px;
+}
+.rich-value {
+  color: var(--text);
+  font-size: 25px;
+  line-height: 1.25;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.rich-detail {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 8px;
+}
+
 /* ---- result cards ---- */
 .result {
   padding: 16px 18px;
