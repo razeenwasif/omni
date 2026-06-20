@@ -54,6 +54,14 @@ pub struct Document {
     pub n_passages: u32,
     /// Publish time as unix seconds (0 = unknown), for the freshness boost.
     pub published: i64,
+    /// Page images extracted by the crawler, used by the Images vertical.
+    pub images: Vec<Image>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Image {
+    pub url: String,
+    pub alt: String,
 }
 
 impl Document {
@@ -297,10 +305,23 @@ impl Segment {
 
     /// Add a document (in-memory mode only). Returns the new local doc id.
     pub fn add_document(&mut self, url: String, title: String, text: &str) -> usize {
+        self.add_document_with_images(url, title, text, Vec::new())
+    }
+
+    /// Add a document plus extracted page-image metadata. Image alt text and URLs
+    /// are indexed with the body so image-specific queries can find the page.
+    pub fn add_document_with_images(
+        &mut self,
+        url: String,
+        title: String,
+        text: &str,
+        images: Vec<Image>,
+    ) -> usize {
         let id = self.docs.len();
+        let index_text = image_index_text(text, &images);
 
         let title_terms = analyze::analyze_positions(&title);
-        let body_terms = analyze::analyze_positions(text);
+        let body_terms = analyze::analyze_positions(&index_text);
         let body_base = analyze::tokenize(&title).len() as u32 + FIELD_GAP;
         let len_title = title_terms.len() as u32;
         let len_body = body_terms.len() as u32;
@@ -339,7 +360,7 @@ impl Segment {
             });
         }
 
-        let content_hash = content_hash(&title, text);
+        let content_hash = content_hash(&title, &index_text);
         let stored = store_text(text, STORED_TEXT_CAP);
         self.docs.push(Document {
             id,
@@ -355,6 +376,7 @@ impl Segment {
             emb_len: 0,
             n_passages: 0,
             published: 0,
+            images,
         });
         self.live_count += 1;
         self.total_title_len += len_title as u64;
@@ -440,4 +462,19 @@ fn store_text(text: &str, max_chars: usize) -> String {
     } else {
         cleaned.chars().take(max_chars).collect()
     }
+}
+
+fn image_index_text(text: &str, images: &[Image]) -> String {
+    if images.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len() + images.len() * 64);
+    out.push_str(text);
+    for img in images {
+        out.push(' ');
+        out.push_str(&img.alt);
+        out.push(' ');
+        out.push_str(&img.url);
+    }
+    out
 }

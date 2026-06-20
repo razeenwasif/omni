@@ -61,6 +61,19 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 44 (real image vertical) ✅
+
+`type=images` now searches real crawler image metadata instead of returning an
+empty placeholder. The Go crawler extracts OpenGraph/Twitter image cards plus
+`<img>` `src`/lazy/srcset URLs, stores repeated `image:` headers, and normalizes
+relative image URLs to absolute URLs. The Rust core parses and persists those
+image records, indexes image alt text and image URLs for recall, filters the
+Images tab to pages with images, returns image metadata in `fmt=json`, and renders
+the HTML Images tab as a stable thumbnail grid. Old `OSG5` segment files still
+load with empty image lists; newly saved indexes write `OSG6`. Covered by crawler
+extraction tests, doc-store parsing, persistence, and vertical filter tests.
+Below still holds.
+
 ## Status: Phase 43 (local rich answer cards) ✅
 
 The results page now renders deterministic rich answer cards above normal
@@ -80,10 +93,9 @@ search parameter: `All`, `Images`, `News/Fresh`, `Docs`, `Code`, and `Sites`.
 The same filter works for HTML and `fmt=json` clients. `News/Fresh` keeps dated
 pages, `Docs` favors documentation/reference URLs and titles, `Code` favors
 repository/package/API/source-like pages, and `Sites` surfaces curated essential
-site launch cards from the bang table. `Images` is intentionally empty for now
-because the crawler does not yet persist image metadata; the tab is wired so the
-later image-index phase can fill it without changing the URL contract. Covered
-by focused vertical filter tests. Below still holds.
+site launch cards from the bang table. `Images` now filters to crawler-extracted
+image metadata and renders a thumbnail grid. Covered by focused vertical filter
+tests. Below still holds.
 
 ## Status: Phase 41 (Google-style query operators) ✅
 

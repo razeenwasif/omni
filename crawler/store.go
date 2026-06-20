@@ -28,6 +28,12 @@ func writeDoc(dir string, p Page, status int) error {
 	if p.Published != "" {
 		fmt.Fprintf(&b, "published: %s\n", oneLine(p.Published))
 	}
+	for _, img := range p.Images {
+		if img.URL == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "image: %s\t%s\n", oneLine(img.URL), oneLine(img.Alt))
+	}
 	fmt.Fprintf(&b, "links: %s\n", strings.Join(p.Links, " "))
 	b.WriteString("\n") // blank line separates headers from body
 	b.WriteString(p.Text)
@@ -42,5 +48,5 @@ func writeDoc(dir string, p Page, status int) error {
 }
 
 func oneLine(s string) string {
-	return strings.TrimSpace(strings.NewReplacer("\n", " ", "\r", " ").Replace(s))
+	return strings.TrimSpace(strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(s))
 }

@@ -11,11 +11,13 @@ func TestExtractKeepsMetadataAndLinks(t *testing.T) {
   <head>
     <title>Rust Guide</title>
     <meta property="article:published_time" content="2026-06-18T10:00:00Z">
+    <meta property="og:image" content="/social-card.png">
   </head>
   <body>
     <main>
       <h1>Rust Guide</h1>
       <p>This guide explains ownership, borrowing, lifetimes, and safe memory management.</p>
+      <img src="/images/ownership.png" alt="Rust ownership diagram">
       <p>It has enough useful body text to be selected as readable main page content.</p>
       <a href="/chapter-2">Next chapter</a>
     </main>
@@ -31,6 +33,15 @@ func TestExtractKeepsMetadataAndLinks(t *testing.T) {
 	}
 	if len(got.Links) != 1 || got.Links[0] != "https://example.com/chapter-2" {
 		t.Fatalf("links mismatch: %#v", got.Links)
+	}
+	if len(got.Images) != 2 {
+		t.Fatalf("images mismatch: %#v", got.Images)
+	}
+	if got.Images[0].URL != "https://example.com/social-card.png" || got.Images[0].Alt != "Rust Guide" {
+		t.Fatalf("open graph image mismatch: %#v", got.Images[0])
+	}
+	if got.Images[1].URL != "https://example.com/images/ownership.png" || got.Images[1].Alt != "Rust ownership diagram" {
+		t.Fatalf("img extraction mismatch: %#v", got.Images[1])
 	}
 	if !strings.Contains(got.Text, "ownership, borrowing, lifetimes") {
 		t.Fatalf("text mismatch: %q", got.Text)
@@ -98,5 +109,25 @@ func TestUnescapeEntitiesHandlesNamedDecimalAndHex(t *testing.T) {
 	want := "Rust & Go 'search' 🔍 docs"
 	if got != want {
 		t.Fatalf("entity decode mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestExtractImagesHandlesSrcsetLazyAttrsAndDedupes(t *testing.T) {
+	page := `<html><body>
+	  <img srcset="/small.png 1x, /large.png 2x" alt="Small diagram">
+	  <img data-src="/lazy.png" title="Lazy loaded figure">
+	  <img src="/small.png" alt="Duplicate">
+	  <img src="data:image/png;base64,abc" alt="Inline">
+	</body></html>`
+
+	got := extract("https://example.com/docs/page", page)
+	if len(got.Images) != 2 {
+		t.Fatalf("images mismatch: %#v", got.Images)
+	}
+	if got.Images[0].URL != "https://example.com/small.png" || got.Images[0].Alt != "Small diagram" {
+		t.Fatalf("srcset image mismatch: %#v", got.Images[0])
+	}
+	if got.Images[1].URL != "https://example.com/lazy.png" || got.Images[1].Alt != "Lazy loaded figure" {
+		t.Fatalf("lazy image mismatch: %#v", got.Images[1])
 	}
 }

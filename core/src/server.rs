@@ -292,6 +292,7 @@ fn ingest_reply(live: &Arc<LiveIndex>, dir: Option<&std::path::Path>, body: &str
                 url: p.url,
                 title: p.title,
                 links: Vec::new(),
+                images: Vec::new(),
                 text: p.text,
                 published: crate::docstore::parse_published(&p.published),
             })
@@ -321,7 +322,7 @@ fn ingest_reply(live: &Arc<LiveIndex>, dir: Option<&std::path::Path>, body: &str
         } else {
             rec.title.clone()
         };
-        staging.add_document(rec.url.clone(), title, &rec.text);
+        staging.add_document_with_images(rec.url.clone(), title, &rec.text, rec.images.clone());
         if rec.published != 0 {
             staging.set_published(&rec.url, rec.published);
         }
@@ -588,12 +589,29 @@ fn search_json(index: &Index, q: &str, opts: query::SearchOpts, k: usize) -> Str
                 Some(a) => format!(",\"answer\":{}", json_string(a)),
                 None => String::new(),
             };
+            let images = if h.images.is_empty() {
+                String::new()
+            } else {
+                let imgs: Vec<String> = h
+                    .images
+                    .iter()
+                    .map(|img| {
+                        format!(
+                            "{{\"url\":{},\"alt\":{}}}",
+                            json_string(&img.url),
+                            json_string(&img.alt)
+                        )
+                    })
+                    .collect();
+                format!(",\"images\":[{}]", imgs.join(","))
+            };
             format!(
-                "{{\"url\":{},\"title\":{},\"score\":{:.5}{}}}",
+                "{{\"url\":{},\"title\":{},\"score\":{:.5}{}{}}}",
                 json_string(&h.url),
                 json_string(&h.title),
                 h.score,
-                answer
+                answer,
+                images
             )
         })
         .collect();
@@ -712,7 +730,7 @@ fn results_page(
     } else {
         // The results surface always tries for a direct answer (extractive, cheap).
         let opts = query::SearchOpts {
-            answer: true,
+            answer: vertical != query::Vertical::Images,
             ..opts
         };
         let start = Instant::now();
@@ -771,27 +789,37 @@ fn results_page(
                 ));
             }
         }
-        body.push_str(&format!(
-            "<div class=\"meta\">{} {} results</div>",
-            hits.len(),
-            html_escape(vertical.label())
-        ));
-        for h in &hits {
-            let click = click_url(q, &h.url);
+        if vertical == query::Vertical::Images {
+            let image_count: usize = hits.iter().map(|h| h.images.len().min(4)).sum();
             body.push_str(&format!(
-                "<div class=\"result\">\
-                   <a class=\"title\" href=\"{url}\">{title}</a>\
-                   <div class=\"url\">{raw_url}</div>\
-                   <div class=\"snippet\">{snippet}</div>\
-                   <div class=\"score\">score {score:.3}</div>\
-                 </div>",
-                url = html_escape(&click),
-                raw_url = html_escape(&h.url),
-                title = html_escape(&h.title),
-                // Snippet is already HTML-safe (escaped + <mark> highlights).
-                snippet = h.snippet,
-                score = h.score,
+                "<div class=\"meta\">{} images from {} results</div>",
+                image_count,
+                hits.len()
             ));
+            body.push_str(&render_image_grid(q, &hits));
+        } else {
+            body.push_str(&format!(
+                "<div class=\"meta\">{} {} results</div>",
+                hits.len(),
+                html_escape(vertical.label())
+            ));
+            for h in &hits {
+                let click = click_url(q, &h.url);
+                body.push_str(&format!(
+                    "<div class=\"result\">\
+                       <a class=\"title\" href=\"{url}\">{title}</a>\
+                       <div class=\"url\">{raw_url}</div>\
+                       <div class=\"snippet\">{snippet}</div>\
+                       <div class=\"score\">score {score:.3}</div>\
+                     </div>",
+                    url = html_escape(&click),
+                    raw_url = html_escape(&h.url),
+                    title = html_escape(&h.title),
+                    // Snippet is already HTML-safe (escaped + <mark> highlights).
+                    snippet = h.snippet,
+                    score = h.score,
+                ));
+            }
         }
     }
 
@@ -873,6 +901,33 @@ fn vertical_tabs(q: &str, active: query::Vertical) -> String {
         })
         .collect();
     format!("<nav class=\"tabs\" aria-label=\"Search verticals\">{items}</nav>")
+}
+
+fn render_image_grid(q: &str, hits: &[query::Hit]) -> String {
+    let mut items = String::new();
+    for h in hits {
+        let click = click_url(q, &h.url);
+        for image in h.images.iter().take(4) {
+            let label = if image.alt.is_empty() {
+                &h.title
+            } else {
+                &image.alt
+            };
+            items.push_str(&format!(
+                "<a class=\"image-card\" href=\"{page_url}\">\
+                   <img src=\"{image_url}\" alt=\"{alt}\" loading=\"lazy\" referrerpolicy=\"no-referrer\">\
+                   <span class=\"image-caption\">{caption}</span>\
+                   <span class=\"image-source\">{source}</span>\
+                 </a>",
+                page_url = html_escape(&click),
+                image_url = html_escape(&image.url),
+                alt = html_escape(label),
+                caption = html_escape(label),
+                source = html_escape(&h.title),
+            ));
+        }
+    }
+    format!("<div class=\"image-grid\">{items}</div>")
 }
 
 fn render_rich_card(card: &crate::cards::RichCard, source: Option<(&str, &str)>) -> String {

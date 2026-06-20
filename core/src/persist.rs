@@ -30,7 +30,8 @@ use std::io;
 use std::path::Path;
 
 const MANIFEST_MAGIC: &[u8; 8] = b"OMNIDIR\x07"; // magic + format version 7
-const SEG_MAGIC: &[u8; 4] = b"OSG5"; // layout v5: per-doc passage embeddings (dim + count)
+const SEG_MAGIC: &[u8; 4] = b"OSG6"; // layout v6: per-doc image metadata + passage embeddings
+const SEG_MAGIC_V5: &[u8; 4] = b"OSG5"; // layout v5: per-doc passage embeddings (dim + count)
 
 // ---- public API ------------------------------------------------------------
 
@@ -218,6 +219,11 @@ fn encode_segment(seg: &Segment) -> Vec<u8> {
         write_varint(&mut buf, doc.len_body as u64);
         write_varint(&mut buf, doc.content_hash);
         write_varint(&mut buf, doc.published.max(0) as u64); // 0 = unknown
+        write_varint(&mut buf, doc.images.len() as u64);
+        for image in &doc.images {
+            write_str(&mut buf, &image.url);
+            write_str(&mut buf, &image.alt);
+        }
         write_varint(&mut buf, doc.emb_len as u64); // per-passage dim
         write_varint(&mut buf, doc.n_passages as u64); // passage count
                                                        // --- cold fields (offset recorded by the loader from here) ---
@@ -336,9 +342,13 @@ fn parse_seg_header(
     };
     let mut magic = [0u8; 4];
     r.read_exact(&mut magic)?;
-    if &magic != SEG_MAGIC {
+    let has_images = if &magic == SEG_MAGIC {
+        true
+    } else if &magic == SEG_MAGIC_V5 {
+        false
+    } else {
         return Err(bad("not an Omni segment file"));
-    }
+    };
 
     let doc_count = r.read_varint()? as usize;
     let mut docs = Vec::with_capacity(doc_count);
@@ -349,6 +359,19 @@ fn parse_seg_header(
         let len_body = r.read_varint()? as u32;
         let content_hash = r.read_varint()?;
         let published = r.read_varint()? as i64;
+        let images = if has_images {
+            let n = r.read_varint()? as usize;
+            let mut images = Vec::with_capacity(n);
+            for _ in 0..n {
+                images.push(crate::index::Image {
+                    url: r.read_str()?,
+                    alt: r.read_str()?,
+                });
+            }
+            images
+        } else {
+            Vec::new()
+        };
         let emb_len = r.read_varint()? as u32;
         let n_passages = r.read_varint()? as u32;
         // Cold fields start here; record the offset, then skip them.
@@ -374,6 +397,7 @@ fn parse_seg_header(
                 emb_len,
                 n_passages,
                 published,
+                images,
             },
             cold_offset,
         ));
@@ -661,7 +685,15 @@ mod tests {
     #[test]
     fn index_round_trips_through_disk() {
         let mut idx = Index::new();
-        idx.add_document("a".into(), "Rust".into(), "rust systems language rust");
+        idx.add_document_with_images(
+            "a".into(),
+            "Rust".into(),
+            "rust systems language rust",
+            vec![crate::index::Image {
+                url: "https://example.com/rust.png".into(),
+                alt: "Rust logo".into(),
+            }],
+        );
         idx.add_document("b".into(), "Go".into(), "go concurrent language");
         idx.set_ranks(&[0.7, 0.3]);
 
@@ -671,6 +703,11 @@ mod tests {
 
         assert_eq!(loaded.doc_count(), 2);
         assert!((loaded.segments()[0].docs[0].rank - 0.7).abs() < 1e-9);
+        assert_eq!(loaded.segments()[0].docs[0].images.len(), 1);
+        assert_eq!(
+            loaded.segments()[0].docs[0].images[0].url,
+            "https://example.com/rust.png"
+        );
         let before = query::search(&idx, "rust language", 10);
         let after = query::search(&loaded, "rust language", 10);
         assert_eq!(before.len(), after.len());

@@ -36,6 +36,7 @@ type Addr = (usize, usize);
 pub struct Hit {
     pub url: String,
     pub title: String,
+    pub images: Vec<crate::index::Image>,
     /// HTML-safe, highlighted snippet (already escaped — insert as-is).
     pub snippet: String,
     pub score: f64,
@@ -412,9 +413,7 @@ fn doc_matches_vertical(seg: &Segment, local: usize, vertical: Vertical) -> bool
     let doc = &seg.docs[local];
     match vertical {
         Vertical::All => true,
-        // Omni does not yet persist image records from the crawler. Keep this
-        // vertical honest until a later image-index phase adds metadata.
-        Vertical::Images => false,
+        Vertical::Images => !doc.images.is_empty(),
         Vertical::Fresh => doc.published > 0,
         Vertical::Docs => is_docs_result(doc),
         Vertical::Code => is_code_result(doc, seg.text(local).as_ref()),
@@ -759,6 +758,7 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
             Hit {
                 url: seg.docs[local].url.clone(),
                 title: seg.docs[local].title.clone(),
+                images: seg.docs[local].images.clone(),
                 snippet: snippet::make(text.as_ref(), &term_set),
                 score,
                 answer: None,
@@ -1529,12 +1529,21 @@ mod tests {
     }
 
     #[test]
-    fn vertical_images_is_empty_until_image_index_exists() {
+    fn vertical_images_filters_to_image_bearing_docs_and_indexes_alt_text() {
         let mut idx = Index::new();
-        idx.add_document(
+        idx.add_document_with_images(
             "https://example.com/rust-logo".into(),
-            "Rust logo".into(),
-            "rust logo image",
+            "Brand assets".into(),
+            "downloadable media",
+            vec![crate::index::Image {
+                url: "https://example.com/rust-logo.png".into(),
+                alt: "Rust logo image".into(),
+            }],
+        );
+        idx.add_document(
+            "https://example.com/rust-text".into(),
+            "Rust logo article".into(),
+            "rust logo image but no image metadata",
         );
         let hits = search_with(
             &idx,
@@ -1545,7 +1554,9 @@ mod tests {
                 ..SearchOpts::default()
             },
         );
-        assert!(hits.is_empty());
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://example.com/rust-logo");
+        assert_eq!(hits[0].images[0].alt, "Rust logo image");
     }
 
     #[test]

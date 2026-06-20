@@ -14,6 +14,13 @@ type Page struct {
 	Text      string
 	Published string   // raw publish date if found (empty = unknown)
 	Links     []string // absolute, in-scope-filtering happens at enqueue time
+	Images    []Image  // absolute image URLs plus searchable labels
+}
+
+// Image is a page image that can back Omni's Images vertical.
+type Image struct {
+	URL string
+	Alt string
 }
 
 var (
@@ -28,6 +35,8 @@ var (
 
 	reTitle      = regexp.MustCompile(`(?is)<title\b[^>]*>(.*?)</title>`)
 	reHref       = regexp.MustCompile(`(?is)<a\b[^>]*\bhref\s*=\s*("([^"]*)"|'([^']*)'|([^\s">]+))`)
+	reImgTag     = regexp.MustCompile(`(?is)<img\b[^>]*>`)
+	reMetaTag    = regexp.MustCompile(`(?is)<meta\b[^>]*>`)
 	reTag        = regexp.MustCompile(`(?s)<[^>]*>`)
 	reWhitespace = regexp.MustCompile(`\s+`)
 
@@ -59,10 +68,11 @@ func extract(pageURL, html string) Page {
 	}
 
 	links := extractLinks(html, base)
+	images := extractImages(html, base, title)
 
 	text := readableText(html)
 
-	return Page{URL: pageURL, Title: title, Text: text, Published: extractPublished(html), Links: links}
+	return Page{URL: pageURL, Title: title, Text: text, Published: extractPublished(html), Links: links, Images: images}
 }
 
 // readableText extracts the most likely main content, strips obvious boilerplate,
@@ -195,6 +205,72 @@ func extractLinks(html string, base *url.URL) []string {
 	return out
 }
 
+func extractImages(html string, base *url.URL, pageTitle string) []Image {
+	const maxImages = 24
+	seen := map[string]bool{}
+	var out []Image
+	add := func(raw, alt string) {
+		if len(out) >= maxImages {
+			return
+		}
+		u := resolveMediaURL(raw, base)
+		if u == "" || seen[u] {
+			return
+		}
+		seen[u] = true
+		out = append(out, Image{URL: u, Alt: collapse(alt)})
+	}
+
+	for _, tag := range reMetaTag.FindAllString(html, -1) {
+		prop := strings.ToLower(firstNonEmpty(attrValue(tag, "property"), attrValue(tag, "name")))
+		if prop == "og:image" || prop == "og:image:url" || prop == "twitter:image" || prop == "twitter:image:src" {
+			add(attrValue(tag, "content"), pageTitle)
+		}
+	}
+	for _, tag := range reImgTag.FindAllString(html, -1) {
+		raw := firstNonEmpty(
+			attrValue(tag, "src"),
+			attrValue(tag, "data-src"),
+			attrValue(tag, "data-original"),
+			firstSrcsetURL(attrValue(tag, "srcset")),
+			firstSrcsetURL(attrValue(tag, "data-srcset")),
+		)
+		alt := firstNonEmpty(attrValue(tag, "alt"), attrValue(tag, "title"))
+		add(raw, alt)
+	}
+	return out
+}
+
+func resolveMediaURL(raw string, base *url.URL) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.HasPrefix(raw, "#") {
+		return ""
+	}
+	ref, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	abs := base.ResolveReference(ref)
+	if abs.Scheme != "http" && abs.Scheme != "https" {
+		return ""
+	}
+	abs.Fragment = ""
+	return abs.String()
+}
+
+func firstSrcsetURL(srcset string) string {
+	srcset = strings.TrimSpace(srcset)
+	if srcset == "" {
+		return ""
+	}
+	first := strings.Split(srcset, ",")[0]
+	fields := strings.Fields(first)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
 func stripTags(s string) string { return reTag.ReplaceAllString(s, " ") }
 
 func collapse(s string) string {
@@ -293,6 +369,14 @@ func firstNonEmpty(vals ...string) string {
 		if v != "" {
 			return v
 		}
+	}
+	return ""
+}
+
+func attrValue(tag, name string) string {
+	re := regexp.MustCompile(`(?is)\b` + regexp.QuoteMeta(name) + `\s*=\s*("([^"]*)"|'([^']*)'|([^\s">]+))`)
+	if m := re.FindStringSubmatch(tag); m != nil {
+		return unescapeEntities(firstNonEmpty(m[2], m[3], m[4]))
 	}
 	return ""
 }

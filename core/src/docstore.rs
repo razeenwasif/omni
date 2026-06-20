@@ -4,8 +4,9 @@
 //!
 //! Each `*.doc` file is one crawled page in an RFC822-style format: header lines
 //! (`key: value`), a blank line, then the raw body text. We parse the headers we
-//! care about (`url`, `title`, `links`) and index the body. The `links:` header
-//! is the link graph that PageRank runs over.
+//! care about (`url`, `title`, `links`, `image`) and index the body. The `links:`
+//! header is the link graph that PageRank runs over; repeated `image:` headers
+//! feed the Images vertical.
 //!
 //! The cross-language boundary stays dependency-free: no JSON parser, no serde —
 //! just line splitting, readable in both Go and Rust.
@@ -21,6 +22,7 @@ pub struct Record {
     pub url: String,
     pub title: String,
     pub links: Vec<String>,
+    pub images: Vec<crate::index::Image>,
     pub text: String,
     /// Publish time as unix seconds (0 = unknown), from the `published:` header.
     pub published: i64,
@@ -40,7 +42,12 @@ pub struct UpdateStats {
 pub fn load_dir(index: &mut Index, dir: &Path) -> std::io::Result<usize> {
     let records = read_records(dir)?;
     for rec in &records {
-        index.add_document(rec.url.clone(), title_or_url(rec), &rec.text);
+        index.add_document_with_images(
+            rec.url.clone(),
+            title_or_url(rec),
+            &rec.text,
+            rec.images.clone(),
+        );
         if rec.published != 0 {
             index.set_published(&rec.url, rec.published);
         }
@@ -68,18 +75,28 @@ pub fn update(index: &mut Index, dir: &Path) -> std::io::Result<UpdateStats> {
     for rec in &records {
         seen.insert(rec.url.clone());
         let title = title_or_url(rec);
-        let new_hash = index::content_hash(&title, &rec.text);
+        let new_hash = index::content_hash(&title, &index_text(&rec.text, &rec.images));
         match index.addr_for_url(&rec.url) {
             Some((s, l)) if index.segments()[s].docs[l].content_hash == new_hash => {
                 stats.unchanged += 1
             }
             Some(_) => {
                 index.delete_by_url(&rec.url);
-                index.add_document(rec.url.clone(), title, &rec.text);
+                index.add_document_with_images(
+                    rec.url.clone(),
+                    title,
+                    &rec.text,
+                    rec.images.clone(),
+                );
                 stats.changed += 1;
             }
             None => {
-                index.add_document(rec.url.clone(), title, &rec.text);
+                index.add_document_with_images(
+                    rec.url.clone(),
+                    title,
+                    &rec.text,
+                    rec.images.clone(),
+                );
                 stats.added += 1;
             }
         }
@@ -163,6 +180,7 @@ pub fn parse(raw: &str) -> Option<Record> {
     let mut url = String::new();
     let mut title = String::new();
     let mut links = Vec::new();
+    let mut images = Vec::new();
     let mut published = 0i64;
 
     for line in header_block.lines() {
@@ -174,6 +192,11 @@ pub fn parse(raw: &str) -> Option<Record> {
             "url" => url = val.to_string(),
             "title" => title = val.to_string(),
             "links" => links = val.split_whitespace().map(|s| s.to_string()).collect(),
+            "image" => {
+                if let Some(img) = parse_image_header(val) {
+                    images.push(img);
+                }
+            }
             "published" => published = parse_published(val),
             _ => {}
         }
@@ -186,9 +209,37 @@ pub fn parse(raw: &str) -> Option<Record> {
         url,
         title,
         links,
+        images,
         text: body.to_string(),
         published,
     })
+}
+
+fn parse_image_header(val: &str) -> Option<crate::index::Image> {
+    let (url, alt) = val.split_once('\t').unwrap_or((val, ""));
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    Some(crate::index::Image {
+        url: url.to_string(),
+        alt: alt.trim().to_string(),
+    })
+}
+
+fn index_text(text: &str, images: &[crate::index::Image]) -> String {
+    if images.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len() + images.len() * 64);
+    out.push_str(text);
+    for img in images {
+        out.push(' ');
+        out.push_str(&img.alt);
+        out.push(' ');
+        out.push_str(&img.url);
+    }
+    out
 }
 
 /// Parse a publish date (ISO-8601-ish: `YYYY-MM-DD`, optionally with a time) into
@@ -233,6 +284,7 @@ mod tests {
         let raw = "url: https://example.com/\n\
                    title: Example\n\
                    status: 200\n\
+                   image: https://example.com/diagram.png\tExample diagram\n\
                    links: https://example.com/a https://example.com/b\n\
                    \n\
                    Hello world body text.\n";
@@ -240,6 +292,9 @@ mod tests {
         assert_eq!(rec.url, "https://example.com/");
         assert_eq!(rec.title, "Example");
         assert_eq!(rec.links.len(), 2);
+        assert_eq!(rec.images.len(), 1);
+        assert_eq!(rec.images[0].url, "https://example.com/diagram.png");
+        assert_eq!(rec.images[0].alt, "Example diagram");
         assert!(rec.text.contains("Hello world"));
     }
 

@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 // Re-export the per-segment types so the rest of the crate keeps importing them
 // from `index` (and so on-disk/query code is unaffected by the split).
-pub use crate::segment::{content_hash, Document, Posting};
+pub use crate::segment::{content_hash, Document, Image, Posting};
 
 /// The full index: an ordered set of segments plus index-wide config.
 ///
@@ -115,6 +115,17 @@ impl Index {
     /// Add a document to the writable segment (creating one if needed). Returns
     /// its global address `(segment, local_id)`.
     pub fn add_document(&mut self, url: String, title: String, text: &str) -> (usize, usize) {
+        self.add_document_with_images(url, title, text, Vec::new())
+    }
+
+    /// Add a document plus extracted page images to the writable segment.
+    pub fn add_document_with_images(
+        &mut self,
+        url: String,
+        title: String,
+        text: &str,
+        images: Vec<Image>,
+    ) -> (usize, usize) {
         let seg = match self.writable {
             Some(s) => s,
             None => {
@@ -126,7 +137,12 @@ impl Index {
         };
         // The writable segment is freshly created here and never shared while the
         // index is being built, so it is uniquely owned.
-        let local = Self::seg_mut(&mut self.segments[seg]).add_document(url.clone(), title, text);
+        let local = Self::seg_mut(&mut self.segments[seg]).add_document_with_images(
+            url.clone(),
+            title,
+            text,
+            images,
+        );
         self.url_to_addr.insert(url, (seg, local));
         (seg, local)
     }

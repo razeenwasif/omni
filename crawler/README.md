@@ -56,8 +56,18 @@ widen/narrow the crawl scope (the host allowlist defaults to those seeds' hosts)
   `<main>`, `<article>`, `role=main`, and content/article wrappers, strips common
   nav/footer/sidebar/cookie/ad/menu boilerplate, keeps headings/code/body text in
   reading order, and decodes named plus numeric HTML entities.
+- **Image metadata**: extracts OpenGraph/Twitter image cards plus `<img>`
+  `src`, lazy-load attributes, and first `srcset` candidates. Relative image URLs
+  are resolved against the page URL and stored with alt/title labels for Omni's
+  Images vertical.
 - **Output**: one `store/<hash>.doc` per page — see the doc-store format in
   `../PLAN.md` §7.
+
+Each `.doc` record may include repeated image headers before the blank line:
+
+```text
+image: https://example.com/diagram.png	Search architecture diagram
+```
 
 ## Files
 
@@ -66,8 +76,8 @@ widen/narrow the crawl scope (the host allowlist defaults to those seeds' hosts)
 | `main.go` | CLI flags, config, entry point |
 | `crawl.go` | Frontier, worker pool, per-host rate gate, fetch loop |
 | `robots.go` | robots.txt fetch, parse, and Allow/Disallow/Crawl-delay logic |
-| `extract.go` | Title / readable text / publish date / outlink extraction from HTML |
-| `extract_test.go` | Fixture coverage for main-content selection, boilerplate removal, code preservation, and entity decoding. |
+| `extract.go` | Title / readable text / publish date / outlink / image extraction from HTML |
+| `extract_test.go` | Fixture coverage for main-content selection, boilerplate removal, code preservation, image extraction, and entity decoding. |
 | `store.go` | Writing `*.doc` records to the doc store |
 
 ## Checks
