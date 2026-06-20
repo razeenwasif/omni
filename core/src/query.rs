@@ -420,7 +420,7 @@ fn doc_matches_vertical(seg: &Segment, local: usize, vertical: Vertical) -> bool
     match vertical {
         Vertical::All => true,
         Vertical::Images => !doc.images.is_empty(),
-        Vertical::Fresh => doc.published > 0,
+        Vertical::Fresh => is_fresh_result(doc, seg.text(local).as_ref()),
         Vertical::Docs => is_docs_result(doc),
         Vertical::Code => is_code_result(doc, seg.text(local).as_ref()),
         Vertical::Sites => is_site_card(doc),
@@ -475,6 +475,91 @@ fn is_code_result(doc: &crate::index::Document, text: &str) -> bool {
         || text.contains("const ")
         || text.contains("import ")
         || text.contains("package ")
+}
+
+fn is_fresh_result(doc: &crate::index::Document, text: &str) -> bool {
+    if doc.published > 0 {
+        return true;
+    }
+
+    let url = doc.url.to_lowercase();
+    let title = doc.title.to_lowercase();
+    let host = url_host(&url).unwrap_or_default();
+    let text = text.chars().take(2_000).collect::<String>().to_lowercase();
+
+    let mut score = 0;
+    if host.starts_with("news.") || host.starts_with("blog.") {
+        score += 2;
+    }
+    if fresh_url_signal(&url) {
+        score += 2;
+    }
+    if fresh_title_signal(&title) {
+        score += 2;
+    }
+    if fresh_text_signal(&text) {
+        score += 1;
+    }
+    score >= 2
+}
+
+fn fresh_url_signal(url: &str) -> bool {
+    [
+        "/news/",
+        "/blog/",
+        "/posts/",
+        "/articles/",
+        "/press/",
+        "/releases/",
+        "/release-notes",
+        "/changelog",
+        "/changelogs/",
+        "/updates/",
+        "/announcements/",
+        "/security/",
+        "/advisories/",
+        "/cve/",
+        "/whats-new",
+        "/what-s-new",
+    ]
+    .iter()
+    .any(|needle| url.contains(needle))
+}
+
+fn fresh_title_signal(title: &str) -> bool {
+    [
+        "release notes",
+        "changelog",
+        "change log",
+        "security advisory",
+        "announcing",
+        "announcement",
+        "released",
+        "latest",
+        "what's new",
+        "whats new",
+        "news",
+        "update",
+        "updates",
+        "cve-",
+    ]
+    .iter()
+    .any(|needle| title.contains(needle))
+}
+
+fn fresh_text_signal(text: &str) -> bool {
+    [
+        "release notes",
+        "changelog",
+        "security advisory",
+        "announcing",
+        "what's new",
+        "whats new",
+        "published",
+        "updated",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
 }
 
 fn is_site_card(doc: &crate::index::Document) -> bool {
@@ -1509,16 +1594,21 @@ mod tests {
     }
 
     #[test]
-    fn vertical_fresh_requires_publish_date() {
+    fn vertical_fresh_keeps_dated_and_strong_undated_news_pages() {
         let mut idx = Index::new();
         idx.add_document(
-            "https://example.com/release".into(),
+            "https://example.com/releases/rust-1-80".into(),
             "Release".into(),
             "rust release notes",
         );
         idx.set_published(
-            "https://example.com/release",
+            "https://example.com/releases/rust-1-80",
             crate::docstore::parse_published("2026-01-01"),
+        );
+        idx.add_document(
+            "https://example.com/changelog/rust-1-81".into(),
+            "Rust 1.81 changelog".into(),
+            "rust release notes",
         );
         idx.add_document(
             "https://example.com/undated".into(),
@@ -1534,8 +1624,11 @@ mod tests {
                 ..SearchOpts::default()
             },
         );
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].url, "https://example.com/release");
+        let urls: std::collections::HashSet<_> = hits.iter().map(|h| h.url.as_str()).collect();
+        assert_eq!(hits.len(), 2);
+        assert!(urls.contains("https://example.com/releases/rust-1-80"));
+        assert!(urls.contains("https://example.com/changelog/rust-1-81"));
+        assert!(!urls.contains("https://example.com/undated"));
     }
 
     #[test]

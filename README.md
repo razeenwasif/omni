@@ -61,6 +61,16 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 48 (Fresh page-type detection) ✅
+
+`type=fresh` now recognizes strong news/update/release/changelog pages even when
+the crawler could not find a publish date. Dated pages still qualify directly,
+while undated pages need strong URL, host, title, or lead-text signals such as
+`/news/`, `/releases/`, `/changelog`, `release notes`, `security advisory`,
+`announcing`, or `what's new`; generic undated pages stay out. Covered by Fresh
+vertical tests for dated, strong undated, and generic undated pages. Below still
+holds.
+
 ## Status: Phase 47 (Fresh news-style result layout) ✅
 
 The `News/Fresh` tab now renders dated results as compact news cards instead of
