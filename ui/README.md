@@ -50,6 +50,22 @@ embedding and reranking, then applied as filters over the candidate pool. Positi
 filter-only searches can return matching docs; purely negative searches do not
 seed the entire corpus.
 
+## Search Verticals
+
+The results page renders Google-style vertical tabs for:
+
+| Tab | `type=` value | Behavior |
+|---|---|---|
+| All | `all` or omitted | Normal ranking. |
+| Images | `images` | Currently empty until the crawler persists image metadata. |
+| News/Fresh | `fresh` | Keeps pages with a publish date. |
+| Docs | `docs` | Keeps documentation/reference/guide/manual-like pages. |
+| Code | `code` | Keeps repository/package/API/source-like pages. |
+| Sites | `sites` | Keeps curated essential-site launch cards from the bang table. |
+
+Submitting from a non-All tab preserves the active `type=` value. JSON clients can
+use the same parameter with `fmt=json`.
+
 ## Telemetry
 
 Normal HTML result pages wrap result links with:

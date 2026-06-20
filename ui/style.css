@@ -156,6 +156,35 @@ body {
 .suggest-item.active,
 .suggest-item:hover { background: rgba(123, 97, 255, 0.18); color: var(--text); }
 
+/* ---- search vertical tabs ---- */
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 14px 2px 16px;
+  padding: 0 2px 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--glass-rim-soft);
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: none;
+  padding: 7px 10px;
+  border-radius: 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  border: 1px solid transparent;
+}
+.tab:hover { color: var(--text); background: rgba(120, 130, 200, 0.08); }
+.tab.active {
+  color: #fff;
+  background: rgba(123, 97, 255, 0.2);
+  border-color: rgba(123, 97, 255, 0.35);
+}
+
 /* ---- meta line ---- */
 .meta {
   color: var(--text-mute);

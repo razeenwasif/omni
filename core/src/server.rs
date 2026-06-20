@@ -567,6 +567,10 @@ fn parse_search_opts(query_str: &str) -> query::SearchOpts {
         rerank: query_param(query_str, "rerank").as_deref() == Some("1"),
         rerank_model: query_param(query_str, "rr_model"),
         answer: query_param(query_str, "answer").as_deref() == Some("1"),
+        vertical: query_param(query_str, "type")
+            .as_deref()
+            .map(query::Vertical::from_param)
+            .unwrap_or(query::Vertical::All),
     }
 }
 
@@ -702,6 +706,7 @@ fn results_page(
     opts: query::SearchOpts,
     telemetry: Option<&Telemetry>,
 ) -> String {
+    let vertical = opts.vertical;
     let hits = if q.is_empty() {
         Vec::new()
     } else {
@@ -731,7 +736,8 @@ fn results_page(
         );
     } else if hits.is_empty() {
         body.push_str(&format!(
-            "<p class=\"hint\">No results for <strong>{}</strong>.</p>",
+            "<p class=\"hint\">No {} results for <strong>{}</strong>.</p>",
+            html_escape(vertical.label()),
             html_escape(q)
         ));
     } else {
@@ -749,7 +755,11 @@ fn results_page(
                 title = html_escape(&top.title),
             ));
         }
-        body.push_str(&format!("<div class=\"meta\">{} results</div>", hits.len()));
+        body.push_str(&format!(
+            "<div class=\"meta\">{} {} results</div>",
+            hits.len(),
+            html_escape(vertical.label())
+        ));
         for h in &hits {
             let click = click_url(q, &h.url);
             body.push_str(&format!(
@@ -775,18 +785,33 @@ fn results_page(
         "shell"
     };
     let brand = "<div class=\"brand\"><span class=\"spark\">✦</span> <b>Omni</b></div>";
+    let hidden_type = if vertical == query::Vertical::All {
+        String::new()
+    } else {
+        format!(
+            "<input type=\"hidden\" name=\"type\" value=\"{}\">",
+            html_escape(vertical.param())
+        )
+    };
     let bar = format!(
         "<div class=\"bar-wrap\">\
            <form id=\"searchform\" class=\"bar\" action=\"/search\" method=\"get\" autocomplete=\"off\">\
              <span class=\"glyph\">⌕</span>\
              <input id=\"q\" name=\"q\" value=\"{q_val}\" placeholder=\"Search Omni\" \
                 spellcheck=\"false\" autofocus>\
+             {hidden_type}\
              <button type=\"submit\">Search</button>\
            </form>\
            <div id=\"suggest\" class=\"suggest\"></div>\
          </div>",
         q_val = html_escape(q),
+        hidden_type = hidden_type,
     );
+    let tabs = if q.is_empty() {
+        String::new()
+    } else {
+        vertical_tabs(q, vertical)
+    };
 
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
@@ -794,15 +819,44 @@ fn results_page(
          <title>Omni — {q_title}</title>\
          <link rel=\"icon\" href=\"/favicon.svg\">\
          <link rel=\"stylesheet\" href=\"/static/style.css?v={ver}\"></head>\
-         <body><div class=\"{shell_class}\">{brand}{bar}{body}</div>\
+         <body><div class=\"{shell_class}\">{brand}{bar}{tabs}{body}</div>\
          <script src=\"/static/omni.js?v={ver}\" defer></script></body></html>",
         ver = env!("CARGO_PKG_VERSION"),
+        tabs = tabs,
         q_title = if q.is_empty() {
             "search".to_string()
         } else {
             html_escape(q)
         },
     )
+}
+
+fn vertical_tabs(q: &str, active: query::Vertical) -> String {
+    let tabs = [
+        query::Vertical::All,
+        query::Vertical::Images,
+        query::Vertical::Fresh,
+        query::Vertical::Docs,
+        query::Vertical::Code,
+        query::Vertical::Sites,
+    ];
+    let items: String = tabs
+        .iter()
+        .map(|&v| {
+            let href = if v == query::Vertical::All {
+                format!("/search?q={}", percent_encode(q))
+            } else {
+                format!("/search?q={}&type={}", percent_encode(q), v.param())
+            };
+            format!(
+                "<a class=\"tab{active}\" href=\"{href}\">{label}</a>",
+                active = if v == active { " active" } else { "" },
+                href = html_escape(&href),
+                label = html_escape(v.label()),
+            )
+        })
+        .collect();
+    format!("<nav class=\"tabs\" aria-label=\"Search verticals\">{items}</nav>")
 }
 
 /// The index dashboard: a glass-card view of live index health (segments, docs,

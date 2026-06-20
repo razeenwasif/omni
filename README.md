@@ -61,6 +61,18 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 42 (search vertical tabs) ✅
+
+The results page now has Google-style vertical tabs backed by a real `type=`
+search parameter: `All`, `Images`, `News/Fresh`, `Docs`, `Code`, and `Sites`.
+The same filter works for HTML and `fmt=json` clients. `News/Fresh` keeps dated
+pages, `Docs` favors documentation/reference URLs and titles, `Code` favors
+repository/package/API/source-like pages, and `Sites` surfaces curated essential
+site launch cards from the bang table. `Images` is intentionally empty for now
+because the crawler does not yet persist image metadata; the tab is wired so the
+later image-index phase can fill it without changing the URL contract. Covered
+by focused vertical filter tests. Below still holds.
+
 ## Status: Phase 41 (Google-style query operators) ✅
 
 Omni now supports the first slice of Google-parity query syntax: `site:host` /

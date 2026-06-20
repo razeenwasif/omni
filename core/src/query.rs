@@ -45,6 +45,51 @@ pub struct Hit {
     pub answer: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Vertical {
+    All,
+    Images,
+    Fresh,
+    Docs,
+    Code,
+    Sites,
+}
+
+impl Vertical {
+    pub fn from_param(s: &str) -> Self {
+        match s {
+            "images" => Vertical::Images,
+            "fresh" | "news" => Vertical::Fresh,
+            "docs" => Vertical::Docs,
+            "code" => Vertical::Code,
+            "sites" => Vertical::Sites,
+            _ => Vertical::All,
+        }
+    }
+
+    pub fn param(self) -> &'static str {
+        match self {
+            Vertical::All => "all",
+            Vertical::Images => "images",
+            Vertical::Fresh => "fresh",
+            Vertical::Docs => "docs",
+            Vertical::Code => "code",
+            Vertical::Sites => "sites",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Vertical::All => "All",
+            Vertical::Images => "Images",
+            Vertical::Fresh => "News/Fresh",
+            Vertical::Docs => "Docs",
+            Vertical::Code => "Code",
+            Vertical::Sites => "Sites",
+        }
+    }
+}
+
 /// Strength of the proximity bonus when distinct query terms appear near each
 /// other. Scaled by the matched terms' IDF sum and the tightness of the span.
 const PROXIMITY_WEIGHT: f64 = 2.0;
@@ -352,6 +397,91 @@ fn doc_matches_operators(seg: &Segment, local: usize, parsed: &ParsedQuery) -> b
     true
 }
 
+fn apply_vertical_filter(
+    segs: &[Arc<Segment>],
+    vertical: Vertical,
+    scores: &mut HashMap<Addr, f64>,
+) {
+    if vertical == Vertical::All {
+        return;
+    }
+    scores.retain(|&(si, local), _| doc_matches_vertical(&segs[si], local, vertical));
+}
+
+fn doc_matches_vertical(seg: &Segment, local: usize, vertical: Vertical) -> bool {
+    let doc = &seg.docs[local];
+    match vertical {
+        Vertical::All => true,
+        // Omni does not yet persist image records from the crawler. Keep this
+        // vertical honest until a later image-index phase adds metadata.
+        Vertical::Images => false,
+        Vertical::Fresh => doc.published > 0,
+        Vertical::Docs => is_docs_result(doc),
+        Vertical::Code => is_code_result(doc, seg.text(local).as_ref()),
+        Vertical::Sites => is_site_card(doc),
+    }
+}
+
+fn is_docs_result(doc: &crate::index::Document) -> bool {
+    let url = doc.url.to_lowercase();
+    let title = doc.title.to_lowercase();
+    let host = url_host(&url).unwrap_or_default();
+    host.contains("docs.")
+        || host.starts_with("doc.")
+        || host.contains("developer.")
+        || host.contains("cppreference")
+        || host.contains("pkg.go.dev")
+        || url.contains("/docs/")
+        || url.contains("/doc/")
+        || url.contains("/reference/")
+        || url.contains("/guide/")
+        || url.contains("/book/")
+        || url.contains("/manual/")
+        || title.contains("documentation")
+        || title.contains("reference")
+        || title.contains("guide")
+        || title.contains("manual")
+}
+
+fn is_code_result(doc: &crate::index::Document, text: &str) -> bool {
+    let url = doc.url.to_lowercase();
+    let title = doc.title.to_lowercase();
+    let text = text.to_lowercase();
+    let host = url_host(&url).unwrap_or_default();
+    host.contains("github.com")
+        || host.contains("gitlab.")
+        || host.contains("crates.io")
+        || host.contains("npmjs.com")
+        || host.contains("pypi.org")
+        || host.contains("pkg.go.dev")
+        || url.contains("/src/")
+        || url.contains("/source/")
+        || url.contains("/api/")
+        || url.ends_with(".rs")
+        || url.ends_with(".go")
+        || url.ends_with(".py")
+        || url.ends_with(".js")
+        || title.contains("api")
+        || title.contains("module")
+        || title.contains("package")
+        || text.contains("fn ")
+        || text.contains("func ")
+        || text.contains("class ")
+        || text.contains("const ")
+        || text.contains("import ")
+        || text.contains("package ")
+}
+
+fn is_site_card(doc: &crate::index::Document) -> bool {
+    crate::bangs::SITES.iter().any(|s| {
+        doc.url == s.home
+            || doc.title.eq_ignore_ascii_case(s.name)
+            || normalize_site_filter(s.home)
+                .map(|site| canonical_site_path(&doc.url) == site)
+                .unwrap_or(false)
+    })
+}
+
 fn canonical_site_path(url: &str) -> String {
     let no_fragment = url.split('#').next().unwrap_or(url).trim();
     let rest = no_fragment
@@ -405,6 +535,8 @@ pub struct SearchOpts {
     /// to `Hit::answer`. Needs an embedded index; costs one query embedding plus a
     /// cosine scan of the top doc's passages. No LLM generation.
     pub answer: bool,
+    /// Search vertical/tab filter. `All` preserves the normal ranking.
+    pub vertical: Vertical,
 }
 
 impl Default for SearchOpts {
@@ -414,6 +546,7 @@ impl Default for SearchOpts {
             rerank: false,
             rerank_model: None,
             answer: false,
+            vertical: Vertical::All,
         }
     }
 }
@@ -500,6 +633,7 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
     }
 
     apply_operator_filters(segs, &parsed, &mut scores);
+    apply_vertical_filter(segs, opts.vertical, &mut scores);
 
     // 2. Proximity bonus: reward docs where the distinct query terms cluster.
     if parsed.terms.len() >= 2 {
@@ -1281,6 +1415,137 @@ mod tests {
         let hits = search(&idx, "site:example.com after:2025-01-01", 10);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].url, "https://example.com/new");
+    }
+
+    #[test]
+    fn vertical_docs_filters_to_documentation_like_pages() {
+        let mut idx = Index::new();
+        idx.add_document(
+            "https://docs.python.org/3/library/asyncio.html".into(),
+            "asyncio documentation".into(),
+            "python event loop tasks",
+        );
+        idx.add_document(
+            "https://example.com/blog/asyncio.html".into(),
+            "asyncio blog".into(),
+            "python event loop tasks",
+        );
+        let hits = search_with(
+            &idx,
+            "python event loop",
+            10,
+            SearchOpts {
+                vertical: Vertical::Docs,
+                ..SearchOpts::default()
+            },
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].url,
+            "https://docs.python.org/3/library/asyncio.html"
+        );
+    }
+
+    #[test]
+    fn vertical_code_filters_to_code_like_pages() {
+        let mut idx = Index::new();
+        idx.add_document(
+            "https://github.com/example/search".into(),
+            "search repository".into(),
+            "rust query parser",
+        );
+        idx.add_document(
+            "https://example.com/search-essay".into(),
+            "search essay".into(),
+            "rust query parser",
+        );
+        let hits = search_with(
+            &idx,
+            "rust query parser",
+            10,
+            SearchOpts {
+                vertical: Vertical::Code,
+                ..SearchOpts::default()
+            },
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://github.com/example/search");
+    }
+
+    #[test]
+    fn vertical_fresh_requires_publish_date() {
+        let mut idx = Index::new();
+        idx.add_document(
+            "https://example.com/release".into(),
+            "Release".into(),
+            "rust release notes",
+        );
+        idx.set_published(
+            "https://example.com/release",
+            crate::docstore::parse_published("2026-01-01"),
+        );
+        idx.add_document(
+            "https://example.com/undated".into(),
+            "Undated".into(),
+            "rust release notes",
+        );
+        let hits = search_with(
+            &idx,
+            "rust release",
+            10,
+            SearchOpts {
+                vertical: Vertical::Fresh,
+                ..SearchOpts::default()
+            },
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://example.com/release");
+    }
+
+    #[test]
+    fn vertical_sites_filters_to_curated_site_cards() {
+        let mut idx = Index::new();
+        idx.add_document(
+            "https://github.com".into(),
+            "GitHub".into(),
+            "source code repositories projects",
+        );
+        idx.add_document(
+            "https://example.com/github-guide".into(),
+            "GitHub Guide".into(),
+            "source code repositories projects",
+        );
+        let hits = search_with(
+            &idx,
+            "github source code",
+            10,
+            SearchOpts {
+                vertical: Vertical::Sites,
+                ..SearchOpts::default()
+            },
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://github.com");
+    }
+
+    #[test]
+    fn vertical_images_is_empty_until_image_index_exists() {
+        let mut idx = Index::new();
+        idx.add_document(
+            "https://example.com/rust-logo".into(),
+            "Rust logo".into(),
+            "rust logo image",
+        );
+        let hits = search_with(
+            &idx,
+            "rust logo",
+            10,
+            SearchOpts {
+                vertical: Vertical::Images,
+                ..SearchOpts::default()
+            },
+        );
+        assert!(hits.is_empty());
     }
 
     #[test]
