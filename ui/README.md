@@ -58,7 +58,7 @@ The results page renders Google-style vertical tabs for:
 |---|---|---|
 | All | `all` or omitted | Normal ranking. |
 | Images | `images` | Keeps pages with crawler-extracted image metadata and renders a thumbnail grid. |
-| News/Fresh | `fresh` | Keeps pages with a publish date. |
+| News/Fresh | `fresh` | Keeps pages with a publish date and applies stronger recency ranking. |
 | Docs | `docs` | Keeps documentation/reference/guide/manual-like pages. |
 | Code | `code` | Keeps repository/package/API/source-like pages. |
 | Sites | `sites` | Keeps curated essential-site launch cards from the bang table. |

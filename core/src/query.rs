@@ -125,6 +125,10 @@ const EXPLICIT_FRESHNESS: FreshnessProfile = FreshnessProfile {
     weight: 0.65,
     tau_days: 90.0,
 };
+const FRESH_VERTICAL_FRESHNESS: FreshnessProfile = FreshnessProfile {
+    weight: 1.50,
+    tau_days: 45.0,
+};
 
 /// A parsed query: free terms, phrases, and metadata filters.
 struct ParsedQuery {
@@ -666,12 +670,16 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
         }
     }
 
-    // 4b. Freshness: a mild recency boost for dated docs, strengthened only when
-    //     the query itself asks for recent/version/security/release material.
-    //     Undated docs (most reference pages) are left neutral, never penalized.
+    // 4b. Freshness: a mild recency boost for dated docs, strengthened when the
+    //     query or the active vertical asks for recent material. Undated docs
+    //     are left neutral in All, and filtered out by the Fresh vertical.
     let now = now_unix();
     if now > 0 {
-        let freshness = freshness_profile(freshness_intent(query));
+        let freshness = if opts.vertical == Vertical::Fresh {
+            FRESH_VERTICAL_FRESHNESS
+        } else {
+            freshness_profile(freshness_intent(query))
+        };
         for (&(si, local), score) in scores.iter_mut() {
             let published = segs[si].docs[local].published;
             if published > 0 {
@@ -728,6 +736,9 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
             qvec.as_deref(),
             &opts,
         );
+    }
+    if opts.vertical == Vertical::Fresh {
+        apply_fresh_vertical_order(segs, now, &mut ranked);
     }
     dedupe_and_diversify(segs, query, &mut ranked, k);
     ranked.truncate(k);
@@ -962,6 +973,28 @@ fn freshness_profile(intent: FreshnessIntent) -> FreshnessProfile {
 
 fn freshness_boost(age_days: f64, profile: FreshnessProfile) -> f64 {
     1.0 + profile.weight * (-age_days.max(0.0) / profile.tau_days).exp()
+}
+
+fn apply_fresh_vertical_order(segs: &[Arc<Segment>], now: i64, ranked: &mut Vec<(Addr, f64)>) {
+    if now <= 0 {
+        return;
+    }
+    for ((si, local), score) in ranked.iter_mut() {
+        let published = segs[*si].docs[*local].published;
+        if published > 0 {
+            let age_days = (now - published).max(0) as f64 / 86_400.0;
+            *score *= freshness_boost(age_days, FRESH_VERTICAL_FRESHNESS);
+        }
+    }
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                let pa = segs[(a.0).0].docs[(a.0).1].published;
+                let pb = segs[(b.0).0].docs[(b.0).1].published;
+                pb.cmp(&pa)
+            })
+    });
 }
 
 fn freshness_intent(query: &str) -> FreshnessIntent {
@@ -1500,6 +1533,41 @@ mod tests {
         );
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].url, "https://example.com/release");
+    }
+
+    #[test]
+    fn vertical_fresh_prefers_newer_equally_relevant_pages() {
+        let mut idx = Index::new();
+        idx.add_document(
+            "https://example.com/old".into(),
+            "Rust ownership".into(),
+            "rust ownership guide",
+        );
+        idx.set_published(
+            "https://example.com/old",
+            crate::docstore::parse_published("2024-01-01"),
+        );
+        idx.add_document(
+            "https://example.com/new".into(),
+            "Rust ownership".into(),
+            "rust ownership guide",
+        );
+        idx.set_published(
+            "https://example.com/new",
+            crate::docstore::parse_published("2026-06-01"),
+        );
+
+        let hits = search_with(
+            &idx,
+            "rust ownership",
+            10,
+            SearchOpts {
+                vertical: Vertical::Fresh,
+                ..SearchOpts::default()
+            },
+        );
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].url, "https://example.com/new");
     }
 
     #[test]

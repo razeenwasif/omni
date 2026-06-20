@@ -61,6 +61,15 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 45 (Fresh vertical recency ranking) ✅
+
+`type=fresh` now has a vertical-specific recency pass instead of only using the
+background freshness nudge from normal search. Fresh still filters to dated pages,
+but dated results get a stronger recency boost and a final post-rerank ordering
+pass so hybrid semantic fusion and optional reranking cannot bury equally
+relevant newer pages. Covered by Fresh vertical filter and recency-order tests.
+Below still holds.
+
 ## Status: Phase 44 (real image vertical) ✅
 
 `type=images` now searches real crawler image metadata instead of returning an
@@ -91,11 +100,11 @@ calculator/conversion/detection tests. Below still holds.
 The results page now has Google-style vertical tabs backed by a real `type=`
 search parameter: `All`, `Images`, `News/Fresh`, `Docs`, `Code`, and `Sites`.
 The same filter works for HTML and `fmt=json` clients. `News/Fresh` keeps dated
-pages, `Docs` favors documentation/reference URLs and titles, `Code` favors
-repository/package/API/source-like pages, and `Sites` surfaces curated essential
-site launch cards from the bang table. `Images` now filters to crawler-extracted
-image metadata and renders a thumbnail grid. Covered by focused vertical filter
-tests. Below still holds.
+pages and applies stronger recency ranking, `Docs` favors documentation/reference
+URLs and titles, `Code` favors repository/package/API/source-like pages, and
+`Sites` surfaces curated essential site launch cards from the bang table. `Images`
+now filters to crawler-extracted image metadata and renders a thumbnail grid.
+Covered by focused vertical filter tests. Below still holds.
 
 ## Status: Phase 41 (Google-style query operators) ✅
 
