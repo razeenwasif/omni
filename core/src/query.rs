@@ -1,8 +1,9 @@
 //! Query execution: turn a query string into a ranked list of documents.
 //!
 //! The pipeline:
-//!   1. Parse the query into free terms plus any `"quoted phrases"`, analyzing
-//!      both the same way documents are analyzed (stop-words + stemming).
+//!   1. Parse the query into Google-style operators (`site:`, `-term`,
+//!      `intitle:`, `before:`, `after:`), free terms, and `"quoted phrases"`,
+//!      analyzing text the same way documents are analyzed.
 //!   2. Recall a candidate pool by **BM25F** (title-weighted), via WAND pruning
 //!      for free-term queries or exhaustive scoring when a phrase is present.
 //!   3. Add a **proximity bonus** when distinct query terms cluster together.
@@ -79,8 +80,11 @@ const EXPLICIT_FRESHNESS: FreshnessProfile = FreshnessProfile {
     tau_days: 90.0,
 };
 
-/// A parsed query: free terms plus phrases.
+/// A parsed query: free terms, phrases, and metadata filters.
 struct ParsedQuery {
+    /// Query text with recognized operators removed. Used for semantic embedding
+    /// and reranking prompts so `site:`/date filters don't pollute intent.
+    clean_text: String,
     /// Every analyzed query term, deduplicated — used for BM25, title boost,
     /// proximity, and snippet highlighting.
     terms: Vec<String>,
@@ -88,10 +92,31 @@ struct ParsedQuery {
     /// where the offset preserves gaps left by stop-words inside the phrase, so
     /// `"search the engine"` matches docs with that exact spacing.
     phrases: Vec<Vec<(String, u32)>>,
+    /// Docs containing any excluded analyzed term are filtered out.
+    exclude_terms: Vec<String>,
+    /// URL host/path prefixes accepted by `site:`.
+    site_filters: Vec<String>,
+    /// `intitle:` terms that must appear in the document title.
+    title_terms: Vec<String>,
+    /// Keep docs published on/after this unix timestamp.
+    after: Option<i64>,
+    /// Keep docs published before this unix timestamp.
+    before: Option<i64>,
 }
 
-/// Split a raw query into free terms and `"quoted phrases"`, analyzing tokens.
+struct OperatorParse {
+    clean: String,
+    exclude_terms: Vec<String>,
+    site_filters: Vec<String>,
+    title_terms: Vec<String>,
+    after: Option<i64>,
+    before: Option<i64>,
+}
+
+/// Split a raw query into free terms, `"quoted phrases"`, and operators.
 fn parse_query(query: &str) -> ParsedQuery {
+    let ops = parse_operators(query);
+    let clean_text = ops.clean.clone();
     let mut phrases = Vec::new();
     let mut term_set: HashSet<String> = HashSet::new();
     let mut terms = Vec::new();
@@ -102,7 +127,7 @@ fn parse_query(query: &str) -> ParsedQuery {
         }
     };
 
-    let mut rest = query;
+    let mut rest = ops.clean.as_str();
     while let Some(open) = rest.find('"') {
         for t in analyze::analyze_terms(&rest[..open]) {
             push_term(t, &mut terms);
@@ -134,7 +159,222 @@ fn parse_query(query: &str) -> ParsedQuery {
         push_term(t, &mut terms);
     }
 
-    ParsedQuery { terms, phrases }
+    ParsedQuery {
+        clean_text,
+        terms,
+        phrases,
+        exclude_terms: ops.exclude_terms,
+        site_filters: ops.site_filters,
+        title_terms: ops.title_terms,
+        after: ops.after,
+        before: ops.before,
+    }
+}
+
+fn parse_operators(query: &str) -> OperatorParse {
+    let mut clean = Vec::new();
+    let mut exclude_terms = Vec::new();
+    let mut site_filters = Vec::new();
+    let mut title_terms = Vec::new();
+    let mut after = None;
+    let mut before = None;
+
+    for part in query_parts(query) {
+        let lower = part.to_lowercase();
+        if part.starts_with('"') {
+            clean.push(part);
+            continue;
+        }
+        if let Some(term) = part.strip_prefix('-') {
+            if !term.is_empty() && !term.contains(':') {
+                exclude_terms.extend(analyze::analyze_terms(term));
+                continue;
+            }
+        }
+        if let Some(site) = lower.strip_prefix("site:") {
+            if let Some(site) = normalize_site_filter(site) {
+                site_filters.push(site);
+                continue;
+            }
+        }
+        if lower.starts_with("intitle:") {
+            let title = &part["intitle:".len()..];
+            let terms = analyze::analyze_terms(title);
+            if !terms.is_empty() {
+                title_terms.extend(terms);
+                continue;
+            }
+        }
+        if let Some(date) = lower.strip_prefix("after:") {
+            if let Some(ts) = parse_operator_date(date) {
+                after = Some(ts);
+                continue;
+            }
+        }
+        if let Some(date) = lower.strip_prefix("before:") {
+            if let Some(ts) = parse_operator_date(date) {
+                before = Some(ts);
+                continue;
+            }
+        }
+        clean.push(part);
+    }
+
+    OperatorParse {
+        clean: clean.join(" "),
+        exclude_terms: dedup_strings(exclude_terms),
+        site_filters: dedup_strings(site_filters),
+        title_terms: dedup_strings(title_terms),
+        after,
+        before,
+    }
+}
+
+fn query_parts(query: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote = false;
+    for ch in query.chars() {
+        if ch == '"' {
+            in_quote = !in_quote;
+            cur.push(ch);
+        } else if ch.is_whitespace() && !in_quote {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(ch);
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn dedup_strings(items: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for item in items {
+        if seen.insert(item.clone()) {
+            out.push(item);
+        }
+    }
+    out
+}
+
+fn normalize_site_filter(site: &str) -> Option<String> {
+    let site = site
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_start_matches("www.")
+        .trim_matches('/')
+        .to_lowercase();
+    (!site.is_empty()).then_some(site)
+}
+
+fn parse_operator_date(date: &str) -> Option<i64> {
+    if date.len() == 4 && date.bytes().all(|b| b.is_ascii_digit()) {
+        let ts = crate::docstore::parse_published(&format!("{date}-01-01"));
+        return (ts > 0).then_some(ts);
+    }
+    let ts = crate::docstore::parse_published(date);
+    (ts > 0).then_some(ts)
+}
+
+fn has_positive_filter(parsed: &ParsedQuery) -> bool {
+    !parsed.site_filters.is_empty()
+        || !parsed.title_terms.is_empty()
+        || parsed.after.is_some()
+        || parsed.before.is_some()
+}
+
+fn seed_filter_candidates(segs: &[Arc<Segment>], scores: &mut HashMap<Addr, f64>) {
+    for (si, seg) in segs.iter().enumerate() {
+        for local in 0..seg.total_docs() {
+            if seg.is_live(local) {
+                scores.insert((si, local), 1.0);
+            }
+        }
+    }
+}
+
+fn apply_operator_filters(
+    segs: &[Arc<Segment>],
+    parsed: &ParsedQuery,
+    scores: &mut HashMap<Addr, f64>,
+) {
+    if parsed.exclude_terms.is_empty()
+        && parsed.site_filters.is_empty()
+        && parsed.title_terms.is_empty()
+        && parsed.after.is_none()
+        && parsed.before.is_none()
+    {
+        return;
+    }
+
+    scores.retain(|&(si, local), _| doc_matches_operators(&segs[si], local, parsed));
+}
+
+fn doc_matches_operators(seg: &Segment, local: usize, parsed: &ParsedQuery) -> bool {
+    if !parsed.site_filters.is_empty() {
+        let site = canonical_site_path(&seg.docs[local].url);
+        if !parsed.site_filters.iter().any(|f| site.starts_with(f)) {
+            return false;
+        }
+    }
+    if !parsed.title_terms.is_empty() {
+        let title_terms: HashSet<String> = analyze::analyze_terms(&seg.docs[local].title)
+            .into_iter()
+            .collect();
+        if !parsed.title_terms.iter().all(|t| title_terms.contains(t)) {
+            return false;
+        }
+    }
+    if let Some(after) = parsed.after {
+        let published = seg.docs[local].published;
+        if published == 0 || published < after {
+            return false;
+        }
+    }
+    if let Some(before) = parsed.before {
+        let published = seg.docs[local].published;
+        if published == 0 || published >= before {
+            return false;
+        }
+    }
+    for term in &parsed.exclude_terms {
+        if seg.positions(term, local).is_some() {
+            return false;
+        }
+    }
+    true
+}
+
+fn canonical_site_path(url: &str) -> String {
+    let no_fragment = url.split('#').next().unwrap_or(url).trim();
+    let rest = no_fragment
+        .split_once("://")
+        .map(|(_, r)| r)
+        .unwrap_or(no_fragment);
+    let host = rest.split(['/', '?']).next().unwrap_or(rest);
+    let host = host
+        .split('@')
+        .next_back()
+        .unwrap_or(host)
+        .split(':')
+        .next()
+        .unwrap_or(host)
+        .trim_start_matches("www.")
+        .to_lowercase();
+    let path = rest
+        .find('/')
+        .map(|i| rest[i..].split(['?', '#']).next().unwrap_or(""))
+        .unwrap_or("")
+        .trim_end_matches('/')
+        .to_lowercase();
+    format!("{host}{path}")
 }
 
 /// Run `query` against `index`, returning up to `k` ranked hits.
@@ -199,6 +439,11 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
     let total = index.doc_count();
     let stats = index.field_stats();
     let parsed = parse_query(query);
+    let model_query = if parsed.clean_text.trim().is_empty() {
+        query
+    } else {
+        parsed.clean_text.as_str()
+    };
     let segs = index.segments();
 
     // Global IDF per query term (df summed across segments).
@@ -242,6 +487,19 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
             }
         }
     }
+
+    // Filter-only positive searches (`site:`, `intitle:`, `after:`/`before:`)
+    // should still return matching docs. Purely negative searches don't seed the
+    // whole corpus.
+    if scores.is_empty()
+        && parsed.terms.is_empty()
+        && parsed.phrases.is_empty()
+        && has_positive_filter(&parsed)
+    {
+        seed_filter_candidates(segs, &mut scores);
+    }
+
+    apply_operator_filters(segs, &parsed, &mut scores);
 
     // 2. Proximity bonus: reward docs where the distinct query terms cluster.
     if parsed.terms.len() >= 2 {
@@ -301,7 +559,7 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
         let cfg = index.embedder();
         if cfg.enabled() && (opts.semantic_weight > 0.0 || opts.rerank || opts.answer) {
             embed::Embedder::from_config(cfg)
-                .map(|e| e.embed_query(query))
+                .map(|e| e.embed_query(model_query))
                 .filter(|v| !v.is_empty())
         } else {
             None
@@ -329,7 +587,14 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
     //    call per query, so it's a "deep search" mode — see rerank.rs).
     if opts.rerank && ranked.len() > 1 {
         let qterms: HashSet<String> = parsed.terms.iter().cloned().collect();
-        rerank_pool(index, query, &mut ranked, &qterms, qvec.as_deref(), &opts);
+        rerank_pool(
+            index,
+            model_query,
+            &mut ranked,
+            &qterms,
+            qvec.as_deref(),
+            &opts,
+        );
     }
     dedupe_and_diversify(segs, query, &mut ranked, k);
     ranked.truncate(k);
@@ -381,7 +646,13 @@ pub fn answer_context(index: &Index, query: &str, n: usize) -> Vec<(String, Stri
     if !cfg.enabled() {
         return Vec::new();
     }
-    let qv = match embed::Embedder::from_config(cfg).map(|e| e.embed_query(query)) {
+    let parsed = parse_query(query);
+    let model_query = if parsed.clean_text.trim().is_empty() {
+        query
+    } else {
+        parsed.clean_text.as_str()
+    };
+    let qv = match embed::Embedder::from_config(cfg).map(|e| e.embed_query(model_query)) {
         Some(v) if !v.is_empty() => v,
         _ => return Vec::new(),
     };
@@ -921,6 +1192,95 @@ mod tests {
         assert_eq!(fused[0].0, 5);
         // Every input doc appears in the fused output exactly once.
         assert_eq!(fused.len(), 5);
+    }
+
+    #[test]
+    fn operators_are_parsed_out_of_model_query() {
+        let parsed = parse_query(
+            r#"rust ownership site:doc.rust-lang.org -unsafe intitle:book after:2025 "borrow checker""#,
+        );
+        assert_eq!(parsed.clean_text, r#"rust ownership "borrow checker""#);
+        assert_eq!(parsed.site_filters, vec!["doc.rust-lang.org"]);
+        assert_eq!(parsed.exclude_terms, vec!["unsaf"]);
+        assert_eq!(parsed.title_terms, vec!["book"]);
+        assert_eq!(
+            parsed.after,
+            Some(crate::docstore::parse_published("2025-01-01"))
+        );
+        assert_eq!(parsed.phrases.len(), 1);
+    }
+
+    #[test]
+    fn site_operator_filters_results() {
+        let mut idx = Index::new();
+        idx.add_document(
+            "https://doc.rust-lang.org/book/ownership.html".into(),
+            "Ownership".into(),
+            "rust ownership borrowing",
+        );
+        idx.add_document(
+            "https://example.com/rust.html".into(),
+            "Ownership".into(),
+            "rust ownership borrowing",
+        );
+        let hits = search(&idx, "rust ownership site:doc.rust-lang.org", 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://doc.rust-lang.org/book/ownership.html");
+    }
+
+    #[test]
+    fn minus_operator_excludes_terms() {
+        let mut idx = Index::new();
+        idx.add_document("a".into(), "Rust Safe".into(), "rust ownership borrowing");
+        idx.add_document("b".into(), "Rust Unsafe".into(), "rust unsafe pointer");
+        let hits = search(&idx, "rust -unsafe", 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "a");
+    }
+
+    #[test]
+    fn intitle_operator_requires_title_term() {
+        let mut idx = Index::new();
+        idx.add_document("a".into(), "Rust Book".into(), "ownership borrowing");
+        idx.add_document("b".into(), "Rust Blog".into(), "ownership borrowing");
+        let hits = search(&idx, "ownership intitle:book", 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "a");
+    }
+
+    #[test]
+    fn date_and_site_filters_can_seed_results_without_terms() {
+        let mut idx = Index::new();
+        idx.add_document(
+            "https://example.com/new".into(),
+            "New".into(),
+            "release notes",
+        );
+        idx.set_published(
+            "https://example.com/new",
+            crate::docstore::parse_published("2026-02-01"),
+        );
+        idx.add_document(
+            "https://example.com/old".into(),
+            "Old".into(),
+            "release notes",
+        );
+        idx.set_published(
+            "https://example.com/old",
+            crate::docstore::parse_published("2024-02-01"),
+        );
+        idx.add_document(
+            "https://other.example/new".into(),
+            "Other".into(),
+            "release notes",
+        );
+        idx.set_published(
+            "https://other.example/new",
+            crate::docstore::parse_published("2026-02-01"),
+        );
+        let hits = search(&idx, "site:example.com after:2025-01-01", 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://example.com/new");
     }
 
     #[test]

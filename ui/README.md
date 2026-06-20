@@ -33,6 +33,23 @@ Programmatic/eval requests with `fmt=json` and `!bang` redirects are ignored.
 The history is deliberately process-local and resets when the Omni server
 restarts.
 
+## Query Operators
+
+The results endpoint accepts a small Google-style operator set:
+
+| Operator | Meaning |
+|---|---|
+| `site:host` / `site:host/path` | Keep results whose normalized URL starts with that host/path. |
+| `-term` | Exclude docs containing the analyzed term. |
+| `intitle:term` | Require the analyzed term in the document title. |
+| `after:YYYY[-MM-DD]` | Keep dated docs published on or after the date. |
+| `before:YYYY[-MM-DD]` | Keep dated docs published before the date. |
+
+Recognized operators are removed from the lexical/semantic query text before
+embedding and reranking, then applied as filters over the candidate pool. Positive
+filter-only searches can return matching docs; purely negative searches do not
+seed the entire corpus.
+
 ## Telemetry
 
 Normal HTML result pages wrap result links with:

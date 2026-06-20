@@ -61,6 +61,17 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 41 (Google-style query operators) ✅
+
+Omni now supports the first slice of Google-parity query syntax: `site:host` /
+`site:host/path`, `-term` exclusions, `intitle:term`, and date filters with
+`after:YYYY[-MM-DD]` / `before:YYYY[-MM-DD]`. Operator tokens are removed from
+the lexical/semantic query text before embedding/reranking, then applied as
+metadata filters over candidates. Positive filter-only searches (for example
+`site:doc.rust-lang.org after:2025`) seed matching docs instead of returning
+nothing; purely negative searches do not dump the whole corpus. Covered by parser
+and end-to-end operator tests. Below still holds.
+
 ## Status: Phase 40 (result diversity + URL dedupe) ✅
 
 The final ranking pass now collapses obvious duplicate URL variants (scheme,
