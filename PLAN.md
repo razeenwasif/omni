@@ -960,3 +960,73 @@ Default stays **0** — identical to the prior contiguous behavior, so the live 
   extractive answer already returns a full ~150-word best passage, so boundary
   splits rarely lose the answer.) The harness again stopped a costly non-win.
   **78 tests green.**
+
+### Phase 36 — Session-aware autocomplete — DONE ✅
+`/ac` is no longer just title-token prefix completion (`suggest.rs`). Omni now
+**learns the full queries** issued during the current server session and ranks
+them ahead of indexed fallbacks by **frequency + recency**. The fallback chain is
+preserved: learned queries → indexed **title-phrase** prefixes → the older
+last-token title-word completion — so existing Flux omnibox typeahead still works
+when nothing has been learned yet. Only HTML `/search` requests teach the
+suggester; `fmt=json` eval/API calls and `!bang` redirects are ignored so eval and
+shortcuts don't pollute the memory. The query memory is **in-process only** and
+resets on restart (no new on-disk format). Tests:
+`learned_queries_rank_before_title_fallbacks`,
+`learned_queries_can_complete_after_space`, `title_phrase_prefixes_are_suggested`
+(alongside the existing `completes_last_token` / `preserves_query_prefix` /
+blank/unknown-prefix guards).
+
+### Phase 37 — Crawler readability extraction — DONE ✅
+The Go crawler's HTML→text pass (`crawler/extract.go`) is no longer a naive
+"strip every tag". It now: drops **non-content blocks** (`script`, `style`,
+`template`, SVG/canvas/iframe); **prefers readable containers** (`<main>`,
+`<article>`, `role=main`, content/article wrappers); strips common
+**nav/footer/sidebar/cookie/ad/menu boilerplate**; preserves headings, code, and
+body text **in reading order**; and decodes **named + numeric (decimal/hex)** HTML
+entities. The doc-store record format is unchanged — this just feeds cleaner text
+downstream to BM25, snippets, passage embeddings, the extractive answer, and RAG
+grounding. Tests (`crawler/extract_test.go`):
+`TestExtractKeepsMetadataAndLinks`,
+`TestReadableTextPrefersMainAndDropsBoilerplate`,
+`TestReadableTextKeepsCodeBlocksInsideArticle`,
+`TestUnescapeEntitiesHandlesNamedDecimalAndHex`.
+
+### Phase 38 — Local search/click telemetry — DONE ✅
+A local feedback loop for search quality (`telemetry.rs`). HTML result searches
+are **timed and counted** in-process — `Telemetry::record_search` tracks total
+searches, **zero-result rate**, top session queries, and **avg / p95 latency**;
+result links now route through **`GET /click?q=…&u=…`** which calls
+`record_click` then 302-redirects to the original page (unsafe non-`http(s)` or
+header-injection URLs are rejected, not redirected). `Telemetry::snapshot()` feeds
+**`GET /stats`** (telemetry rendered alongside index health) and `/dashboard`
+gains search/click panels (`ui/dashboard.js`). `fmt=json` searches stay out of
+user-facing session learning. Telemetry is intentionally **process-local** and
+resets on restart.
+
+### Phase 39 — Query-sensitive freshness — DONE ✅
+Freshness is now **query-aware** (`query.rs`). Dated documents still get only the
+original *mild* recency tiebreak for ordinary reference queries, but
+`freshness_intent(query)` detects explicit freshness intent — `latest`, `recent`,
+`current`, `news`, `changelog`, `release`, `update`, `version`, security/CVE/patch
+terms, or `20xx` years — and switches to a **stronger, faster-decaying** recency
+profile (`freshness_profile` / `freshness_boost`). Undated pages stay **neutral**
+(never penalized), so stable reference docs aren't pushed around just for lacking a
+publish date. Tests: `freshness_intent_detects_recent_queries`,
+`explicit_freshness_boost_is_stronger_and_decays_faster`.
+
+### Phase 40 — Result diversity + URL dedupe — DONE ✅
+A final ranking pass (`query.rs::dedupe_and_diversify`) runs **after**
+lexical/semantic fusion and optional reranking, so relevance scoring stays intact
+while the visible page avoids same-domain walls.
+- **Canonical URL dedupe** (`dedupe_canonical_urls` / `canonical_url`): collapses
+  obvious duplicate variants — scheme, `www.`, `#fragment`, trailing-slash
+  differences — to one result.
+- **Soft host diversity** (`diversify_hosts`): interleaves alternatives **only**
+  when one host clearly dominates the requested top-K *and* other hosts are
+  available; all-single-host corpora and explicit **site queries** (`site:` or the
+  named host in the query) keep their original order.
+Tests: `canonical_url_dedupe_collapses_obvious_variants`,
+`host_diversity_interleaves_dominated_first_page`,
+`host_diversity_skips_site_specific_queries`.
+
+**89 Rust tests green + Go crawler tests green**, warning-free (Phases 36–40).
