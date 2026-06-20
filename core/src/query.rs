@@ -37,6 +37,8 @@ pub struct Hit {
     pub url: String,
     pub title: String,
     pub images: Vec<crate::index::Image>,
+    /// Publish time as unix seconds (0 = unknown).
+    pub published: i64,
     /// HTML-safe, highlighted snippet (already escaped — insert as-is).
     pub snippet: String,
     pub score: f64,
@@ -770,6 +772,7 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
                 url: seg.docs[local].url.clone(),
                 title: seg.docs[local].title.clone(),
                 images: seg.docs[local].images.clone(),
+                published: seg.docs[local].published,
                 snippet: snippet::make(text.as_ref(), &term_set),
                 score,
                 answer: None,

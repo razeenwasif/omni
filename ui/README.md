@@ -58,14 +58,15 @@ The results page renders Google-style vertical tabs for:
 |---|---|---|
 | All | `all` or omitted | Normal ranking. |
 | Images | `images` | Keeps pages with crawler-extracted image metadata and renders a thumbnail grid. |
-| News/Fresh | `fresh` | Keeps pages with a publish date and applies stronger recency ranking. |
+| News/Fresh | `fresh` | Keeps pages with a publish date, applies stronger recency ranking, and renders date/source-first news cards. |
 | Docs | `docs` | Keeps documentation/reference/guide/manual-like pages. |
 | Code | `code` | Keeps repository/package/API/source-like pages. |
 | Sites | `sites` | Keeps curated essential-site launch cards from the bang table. |
 
 Submitting from a non-All tab preserves the active `type=` value. JSON clients can
 use the same parameter with `fmt=json`; image-bearing results include an `images`
-array of `{url, alt}` records.
+array of `{url, alt}` records, and dated results include `published` plus
+`published_display`.
 
 ## Rich Answer Cards
 

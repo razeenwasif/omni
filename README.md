@@ -61,6 +61,14 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 47 (Fresh news-style result layout) ✅
+
+The `News/Fresh` tab now renders dated results as compact news cards instead of
+generic search cards. Each Fresh result emphasizes the publish date and source
+host above the title, keeps the highlighted snippet, and de-emphasizes the raw URL
+below the summary. JSON search clients also receive `published` unix seconds and
+`published_display` (`YYYY-MM-DD`) for dated hits. Below still holds.
+
 ## Status: Phase 46 (RSS/sitemap freshness ingest) ✅
 
 The crawler can now seed crawls from RSS, Atom, and XML sitemap sources with

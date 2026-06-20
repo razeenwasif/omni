@@ -605,13 +605,23 @@ fn search_json(index: &Index, q: &str, opts: query::SearchOpts, k: usize) -> Str
                     .collect();
                 format!(",\"images\":[{}]", imgs.join(","))
             };
+            let published = if h.published > 0 {
+                format!(
+                    ",\"published\":{},\"published_display\":{}",
+                    h.published,
+                    json_string(&format_date(h.published))
+                )
+            } else {
+                String::new()
+            };
             format!(
-                "{{\"url\":{},\"title\":{},\"score\":{:.5}{}{}}}",
+                "{{\"url\":{},\"title\":{},\"score\":{:.5}{}{}{}}}",
                 json_string(&h.url),
                 json_string(&h.title),
                 h.score,
                 answer,
-                images
+                images,
+                published
             )
         })
         .collect();
@@ -797,6 +807,14 @@ fn results_page(
                 hits.len()
             ));
             body.push_str(&render_image_grid(q, &hits));
+        } else if vertical == query::Vertical::Fresh {
+            body.push_str(&format!(
+                "<div class=\"meta\">{} fresh results</div>",
+                hits.len()
+            ));
+            for h in &hits {
+                body.push_str(&render_news_result(q, h));
+            }
         } else {
             body.push_str(&format!(
                 "<div class=\"meta\">{} {} results</div>",
@@ -930,6 +948,30 @@ fn render_image_grid(q: &str, hits: &[query::Hit]) -> String {
     format!("<div class=\"image-grid\">{items}</div>")
 }
 
+fn render_news_result(q: &str, h: &query::Hit) -> String {
+    let click = click_url(q, &h.url);
+    let source = source_label(&h.url);
+    let date = if h.published > 0 {
+        format_date(h.published)
+    } else {
+        "Undated".to_string()
+    };
+    format!(
+        "<article class=\"news-result\">\
+           <div class=\"news-kicker\"><span>{date}</span><span>{source}</span></div>\
+           <a class=\"title\" href=\"{url}\">{title}</a>\
+           <div class=\"snippet\">{snippet}</div>\
+           <div class=\"url\">{raw_url}</div>\
+         </article>",
+        date = html_escape(&date),
+        source = html_escape(&source),
+        url = html_escape(&click),
+        raw_url = html_escape(&h.url),
+        title = html_escape(&h.title),
+        snippet = h.snippet,
+    )
+}
+
 fn render_rich_card(card: &crate::cards::RichCard, source: Option<(&str, &str)>) -> String {
     let detail = card
         .detail
@@ -958,6 +1000,34 @@ fn render_rich_card(card: &crate::cards::RichCard, source: Option<(&str, &str)>)
         detail = detail,
         source = source,
     )
+}
+
+fn source_label(url: &str) -> String {
+    let host = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    host.split(['/', '?', '#'])
+        .next()
+        .unwrap_or(host)
+        .trim_start_matches("www.")
+        .to_string()
+}
+
+fn format_date(ts: i64) -> String {
+    let days = ts.div_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    (y + if m <= 2 { 1 } else { 0 }, m, d)
 }
 
 /// The index dashboard: a glass-card view of live index health (segments, docs,
