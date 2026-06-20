@@ -14,6 +14,9 @@ pub struct RichCard {
 }
 
 pub fn local_card(query: &str) -> Option<RichCard> {
+    if is_weather_query(query) {
+        return None;
+    }
     conversion_card(query).or_else(|| calculator_card(query))
 }
 

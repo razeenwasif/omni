@@ -304,6 +304,7 @@ impl Segment {
     // ---- building (in-memory mode) -----------------------------------------
 
     /// Add a document (in-memory mode only). Returns the new local doc id.
+    #[cfg(test)]
     pub fn add_document(&mut self, url: String, title: String, text: &str) -> usize {
         self.add_document_with_images(url, title, text, Vec::new())
     }
