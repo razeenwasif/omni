@@ -18,8 +18,9 @@ type Crawler struct {
 	mu        sync.Mutex
 	visited   map[string]bool // normalized URLs already enqueued
 	hostCount map[string]int  // pages enqueued per host (for -per-host cap)
-	written   int             // pages actually saved
-	stopped   bool            // hit MaxPages — stop enqueuing/fetching
+	published map[string]string
+	written   int  // pages actually saved
+	stopped   bool // hit MaxPages — stop enqueuing/fetching
 
 	hostGate *hostGate // per-host rate limiting
 	robots   *robotsCache
@@ -34,6 +35,7 @@ func NewCrawler(cfg Config) *Crawler {
 		client:    &http.Client{Timeout: cfg.Timeout},
 		visited:   map[string]bool{},
 		hostCount: map[string]int{},
+		published: map[string]string{},
 		hostGate:  newHostGate(cfg.Delay),
 		robots:    newRobotsCache(cfg.UserAgent),
 		// Generously buffered so workers never block when enqueuing links;
@@ -46,15 +48,18 @@ func NewCrawler(cfg Config) *Crawler {
 func (c *Crawler) Run() int {
 	// Allowlist defaults to the hosts of the seeds.
 	if len(c.cfg.Hosts) == 0 {
-		for _, s := range c.cfg.Seeds {
+		for _, s := range append(append([]string{}, c.cfg.Seeds...), c.cfg.FeedURLs...) {
 			if u, err := url.Parse(s); err == nil {
 				c.cfg.Hosts[strings.ToLower(u.Hostname())] = true
 			}
 		}
 	}
-	fmt.Printf("crawler: %d host(s) max=%d per-host=%d workers=%d delay=%s\n",
-		len(c.cfg.Hosts), c.cfg.MaxPages, c.cfg.PerHost, c.cfg.Workers, c.cfg.Delay)
+	fmt.Printf("crawler: %d host(s) max=%d per-host=%d workers=%d delay=%s feeds=%d\n",
+		len(c.cfg.Hosts), c.cfg.MaxPages, c.cfg.PerHost, c.cfg.Workers, c.cfg.Delay, len(c.cfg.FeedURLs))
 
+	if len(c.cfg.FeedURLs) > 0 {
+		c.discoverFeeds()
+	}
 	for _, s := range c.cfg.Seeds {
 		c.enqueue(s)
 	}
@@ -148,6 +153,9 @@ func (c *Crawler) process(raw string) {
 	}
 
 	page := extract(raw, body)
+	if page.Published == "" {
+		page.Published = c.publishedHint(raw)
+	}
 	if err := writeDoc(c.cfg.OutDir, page, status); err != nil {
 		fmt.Printf("  write err %s: %v\n", raw, err)
 		return
@@ -162,6 +170,31 @@ func (c *Crawler) process(raw string) {
 	for _, link := range page.Links {
 		c.enqueue(link)
 	}
+}
+
+func (c *Crawler) rememberPublished(raw, published string) {
+	if published == "" {
+		return
+	}
+	norm, ok := normalize(raw)
+	if !ok {
+		return
+	}
+	c.mu.Lock()
+	if c.published[norm] == "" {
+		c.published[norm] = published
+	}
+	c.mu.Unlock()
+}
+
+func (c *Crawler) publishedHint(raw string) string {
+	norm, ok := normalize(raw)
+	if !ok {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.published[norm]
 }
 
 func (c *Crawler) fetch(raw string) (body string, contentType string, status int, err error) {

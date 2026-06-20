@@ -14,9 +14,11 @@
 //	go run . -seeds https://a.example,https://b.example \
 //	         -out ../store -max 500 -workers 8 -delay 1s
 //	go run . -seedfile seeds/academic.txt -out ../store -max 1500 -per-host 150
+//	go run . -feeds https://example.com/rss.xml,https://example.com/sitemap.xml
 //
-// Hosts to crawl are derived from the seeds unless -hosts is given. -per-host
-// caps pages per domain so one big site can't dominate a multi-domain crawl.
+// Hosts to crawl are derived from the seeds and feeds unless -hosts is given.
+// -per-host caps pages per domain so one big site can't dominate a multi-domain
+// crawl.
 package main
 
 import (
@@ -30,6 +32,7 @@ import (
 
 type Config struct {
 	Seeds     []string
+	FeedURLs  []string
 	Hosts     map[string]bool // allowlist; empty entry means "derive from seeds"
 	OutDir    string
 	MaxPages  int
@@ -44,7 +47,9 @@ func main() {
 	var (
 		seedsArg = flag.String("seeds", "", "comma-separated seed URLs")
 		seedFile = flag.String("seedfile", "", "file of seed URLs, one per line ('#' comments)")
-		hostsArg = flag.String("hosts", "", "comma-separated host allowlist (default: hosts of the seeds)")
+		feedsArg = flag.String("feeds", "", "comma-separated RSS/Atom feed or sitemap URLs")
+		feedFile = flag.String("feedfile", "", "file of RSS/Atom feed or sitemap URLs, one per line ('#' comments)")
+		hostsArg = flag.String("hosts", "", "comma-separated host allowlist (default: hosts of the seeds and feeds)")
 		out      = flag.String("out", "../store", "doc-store output directory")
 		maxPages = flag.Int("max", 200, "maximum pages to fetch (whole crawl)")
 		perHost  = flag.Int("per-host", 0, "max pages per host (0 = unlimited)")
@@ -64,14 +69,24 @@ func main() {
 		}
 		seeds = append(seeds, fileSeeds...)
 	}
-	if len(seeds) == 0 {
-		fmt.Fprintln(os.Stderr, "crawler: need -seeds or -seedfile")
+	feeds := splitCSV(*feedsArg)
+	if *feedFile != "" {
+		fileFeeds, err := readSeedFile(*feedFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "crawler: cannot read feedfile %s: %v\n", *feedFile, err)
+			os.Exit(1)
+		}
+		feeds = append(feeds, fileFeeds...)
+	}
+	if len(seeds) == 0 && len(feeds) == 0 {
+		fmt.Fprintln(os.Stderr, "crawler: need -seeds, -seedfile, -feeds, or -feedfile")
 		flag.Usage()
 		os.Exit(2)
 	}
 
 	cfg := Config{
 		Seeds:     seeds,
+		FeedURLs:  feeds,
 		Hosts:     map[string]bool{},
 		OutDir:    *out,
 		MaxPages:  *maxPages,

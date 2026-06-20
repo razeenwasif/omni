@@ -61,6 +61,17 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 46 (RSS/sitemap freshness ingest) ✅
+
+The crawler can now seed crawls from RSS, Atom, and XML sitemap sources with
+`-feeds` / `-feedfile`. Feed and sitemap URLs are fetched politely under the same
+host allowlist, robots, timeout, and crawl-delay machinery; sitemap indexes recurse
+to nested sitemaps with a small depth cap. Feed item dates (`pubDate`, `updated`,
+`published`, `lastmod`, etc.) are normalized to ISO timestamps and used as
+published-date hints when the target HTML page does not provide its own date, so
+Fresh has better dated coverage. Covered by RSS, Atom, sitemap, sitemap-index, and
+date-normalization crawler tests. Below still holds.
+
 ## Status: Phase 45 (Fresh vertical recency ranking) ✅
 
 `type=fresh` now has a vertical-specific recency pass instead of only using the
