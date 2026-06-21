@@ -39,6 +39,8 @@ pub struct Hit {
     pub images: Vec<crate::index::Image>,
     /// Publish time as unix seconds (0 = unknown).
     pub published: i64,
+    /// Fresh/news classification for Fresh vertical presentation and JSON.
+    pub fresh_label: Option<&'static str>,
     /// HTML-safe, highlighted snippet (already escaped — insert as-is).
     pub snippet: String,
     pub score: f64,
@@ -489,7 +491,7 @@ fn doc_matches_vertical(seg: &Segment, local: usize, vertical: Vertical) -> bool
     match vertical {
         Vertical::All => true,
         Vertical::Images => !doc.images.is_empty(),
-        Vertical::Fresh => is_fresh_result(doc, seg.text(local).as_ref()),
+        Vertical::Fresh => fresh_reason(doc, seg.text(local).as_ref()).is_some(),
         Vertical::Docs => is_docs_result(doc),
         Vertical::Code => is_code_result(doc, seg.text(local).as_ref()),
         Vertical::Sites => is_site_card(doc),
@@ -546,9 +548,9 @@ fn is_code_result(doc: &crate::index::Document, text: &str) -> bool {
         || text.contains("package ")
 }
 
-fn is_fresh_result(doc: &crate::index::Document, text: &str) -> bool {
+fn fresh_reason(doc: &crate::index::Document, text: &str) -> Option<&'static str> {
     if doc.published > 0 {
-        return true;
+        return Some("Published");
     }
 
     let url = doc.url.to_lowercase();
@@ -569,7 +571,67 @@ fn is_fresh_result(doc: &crate::index::Document, text: &str) -> bool {
     if fresh_text_signal(&text) {
         score += 1;
     }
-    score >= 2
+    if score < 2 {
+        return None;
+    }
+    Some(fresh_signal_label(&url, &title, &text))
+}
+
+fn fresh_signal_label(url: &str, title: &str, text: &str) -> &'static str {
+    let hay = [url, title, text];
+    if hay.iter().any(|s| {
+        ["security", "advisory", "advisories", "cve-", "cve/"]
+            .iter()
+            .any(|needle| s.contains(needle))
+    }) {
+        "Security"
+    } else if hay.iter().any(|s| {
+        [
+            "release notes",
+            "release-note",
+            "releases/",
+            "released",
+            "changelog",
+            "change log",
+            "changelogs/",
+        ]
+        .iter()
+        .any(|needle| s.contains(needle))
+    }) {
+        "Release"
+    } else if hay.iter().any(|s| {
+        [
+            "what's new",
+            "whats new",
+            "whats-new",
+            "what-s-new",
+            "update",
+            "updates",
+            "updated",
+        ]
+        .iter()
+        .any(|needle| s.contains(needle))
+    }) {
+        "Update"
+    } else if hay.iter().any(|s| {
+        [
+            "news.",
+            "/news/",
+            "/blog/",
+            "/posts/",
+            "/articles/",
+            "/press/",
+            "announcing",
+            "announcement",
+            "news",
+        ]
+        .iter()
+        .any(|needle| s.contains(needle))
+    }) {
+        "News"
+    } else {
+        "Fresh"
+    }
 }
 
 fn fresh_url_signal(url: &str) -> bool {
@@ -927,6 +989,7 @@ pub fn search_with(index: &Index, query: &str, k: usize, opts: SearchOpts) -> Ve
                 title: seg.docs[local].title.clone(),
                 images: seg.docs[local].images.clone(),
                 published: seg.docs[local].published,
+                fresh_label: fresh_reason(&seg.docs[local], text.as_ref()),
                 snippet: snippet::make(text.as_ref(), &term_set),
                 score,
                 answer: None,
@@ -1723,6 +1786,16 @@ mod tests {
         assert!(urls.contains("https://example.com/releases/rust-1-80"));
         assert!(urls.contains("https://example.com/changelog/rust-1-81"));
         assert!(!urls.contains("https://example.com/undated"));
+        let dated = hits
+            .iter()
+            .find(|h| h.url == "https://example.com/releases/rust-1-80")
+            .unwrap();
+        assert_eq!(dated.fresh_label, Some("Published"));
+        let changelog = hits
+            .iter()
+            .find(|h| h.url == "https://example.com/changelog/rust-1-81")
+            .unwrap();
+        assert_eq!(changelog.fresh_label, Some("Release"));
     }
 
     #[test]
@@ -1758,6 +1831,41 @@ mod tests {
         );
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].url, "https://example.com/new");
+    }
+
+    #[test]
+    fn vertical_fresh_labels_security_and_update_pages() {
+        let mut idx = Index::new();
+        idx.add_document(
+            "https://example.com/security/cve-2026-1234".into(),
+            "CVE-2026-1234 security advisory".into(),
+            "openssl patch details",
+        );
+        idx.add_document(
+            "https://example.com/whats-new/rust".into(),
+            "What's new in Rust".into(),
+            "rust update notes",
+        );
+
+        let hits = search_with(
+            &idx,
+            "rust update security",
+            10,
+            SearchOpts {
+                vertical: Vertical::Fresh,
+                ..SearchOpts::default()
+            },
+        );
+        let security = hits
+            .iter()
+            .find(|h| h.url == "https://example.com/security/cve-2026-1234")
+            .unwrap();
+        assert_eq!(security.fresh_label, Some("Security"));
+        let update = hits
+            .iter()
+            .find(|h| h.url == "https://example.com/whats-new/rust")
+            .unwrap();
+        assert_eq!(update.fresh_label, Some("Update"));
     }
 
     #[test]

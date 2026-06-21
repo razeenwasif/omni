@@ -61,6 +61,15 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 54 (Fresh result labels) ✅
+
+Fresh/news results now carry a compact freshness label in both HTML and JSON.
+Dated pages show `Published`; undated but strong Fresh matches are classified as
+`Release`, `Security`, `Update`, `News`, or generic `Fresh` from URL/title/body
+signals. This replaces the old undated marker in the News/Fresh tab and gives
+JSON clients a `fresh_label` field for `type=fresh` searches. Covered by Fresh
+vertical label tests. Below still holds.
+
 ## Status: Phase 53 (query-aware image results) ✅
 
 The Images vertical now ranks each result page's extracted thumbnails by the

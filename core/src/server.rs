@@ -583,6 +583,7 @@ fn search_json(index: &Index, q: &str, opts: query::SearchOpts, k: usize) -> Str
     if q.is_empty() {
         return "[]".to_string();
     }
+    let include_fresh_label = opts.vertical == query::Vertical::Fresh;
     let items: Vec<String> = query::search_with(index, q, k, opts)
         .iter()
         .map(|h| {
@@ -615,14 +616,22 @@ fn search_json(index: &Index, q: &str, opts: query::SearchOpts, k: usize) -> Str
             } else {
                 String::new()
             };
+            let fresh_label = if include_fresh_label {
+                h.fresh_label
+                    .map(|label| format!(",\"fresh_label\":{}", json_string(label)))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
             format!(
-                "{{\"url\":{},\"title\":{},\"score\":{:.5}{}{}{}}}",
+                "{{\"url\":{},\"title\":{},\"score\":{:.5}{}{}{}{}}}",
                 json_string(&h.url),
                 json_string(&h.title),
                 h.score,
                 answer,
                 images,
-                published
+                published,
+                fresh_label
             )
         })
         .collect();
@@ -1117,7 +1126,7 @@ fn render_news_result(q: &str, h: &query::Hit) -> String {
     let date = if h.published > 0 {
         format_date(h.published)
     } else {
-        "Undated".to_string()
+        h.fresh_label.unwrap_or("Fresh").to_string()
     };
     format!(
         "<article class=\"news-result\">\
@@ -1293,6 +1302,7 @@ mod tests {
             title: "Rust media gallery".into(),
             images,
             published: 0,
+            fresh_label: None,
             snippet: String::new(),
             score: 1.0,
             answer: None,
