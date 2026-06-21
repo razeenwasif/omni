@@ -15,6 +15,7 @@ pub struct RichCard {
 
 pub fn local_card(query: &str) -> Option<RichCard> {
     weather_card(query)
+        .or_else(|| percentage_card(query))
         .or_else(|| conversion_card(query))
         .or_else(|| calculator_card(query))
 }
@@ -212,6 +213,96 @@ fn calculator_card(query: &str) -> Option<RichCard> {
         value: format_number(value),
         detail: None,
     })
+}
+
+fn percentage_card(query: &str) -> Option<RichCard> {
+    let q = normalize_percentage_query(query);
+    if let Some(card) = percentage_of_card(&q) {
+        return Some(card);
+    }
+    if let Some(card) = percent_ratio_card(&q) {
+        return Some(card);
+    }
+    percentage_question_card(&q)
+}
+
+fn normalize_percentage_query(query: &str) -> String {
+    let mut q = query.trim().trim_end_matches('?').to_lowercase();
+    for prefix in ["what is ", "what's ", "calculate ", "find "] {
+        if let Some(rest) = q.strip_prefix(prefix) {
+            q = rest.trim().to_string();
+            break;
+        }
+    }
+    q
+}
+
+fn percentage_of_card(q: &str) -> Option<RichCard> {
+    if let Some((lhs, rhs)) = q.split_once('%') {
+        let pct = parse_card_number(lhs)?;
+        let rhs = rhs.trim().strip_prefix("of")?.trim();
+        let amount = parse_card_number(rhs)?;
+        return Some(percentage_of_result(pct, amount));
+    }
+    let (lhs, rhs) = q.split_once(" percent of ")?;
+    let pct = parse_card_number(lhs)?;
+    let amount = parse_card_number(rhs)?;
+    Some(percentage_of_result(pct, amount))
+}
+
+fn percentage_of_result(pct: f64, amount: f64) -> RichCard {
+    let value = pct / 100.0 * amount;
+    RichCard {
+        label: "Percentage",
+        title: format!("{}% of {}", format_number(pct), format_number(amount)),
+        value: format_number(value),
+        detail: Some(format!(
+            "{} / 100 * {}",
+            format_number(pct),
+            format_number(amount)
+        )),
+    }
+}
+
+fn percent_ratio_card(q: &str) -> Option<RichCard> {
+    let (lhs, rhs) = q.split_once(" is what percent of ")?;
+    let part = parse_card_number(lhs)?;
+    let whole = parse_card_number(rhs)?;
+    percent_ratio_result(part, whole)
+}
+
+fn percentage_question_card(q: &str) -> Option<RichCard> {
+    let rest = q.strip_prefix("what percentage is ")?;
+    let (lhs, rhs) = rest.split_once(" of ")?;
+    let part = parse_card_number(lhs)?;
+    let whole = parse_card_number(rhs)?;
+    percent_ratio_result(part, whole)
+}
+
+fn percent_ratio_result(part: f64, whole: f64) -> Option<RichCard> {
+    if whole == 0.0 {
+        return None;
+    }
+    let pct = part / whole * 100.0;
+    Some(RichCard {
+        label: "Percentage",
+        title: format!(
+            "{} as a percentage of {}",
+            format_number(part),
+            format_number(whole)
+        ),
+        value: format!("{}%", format_number(pct)),
+        detail: Some(format!(
+            "{} / {} * 100",
+            format_number(part),
+            format_number(whole)
+        )),
+    })
+}
+
+fn parse_card_number(s: &str) -> Option<f64> {
+    let v = s.trim().replace(',', "").parse::<f64>().ok()?;
+    v.is_finite().then_some(v)
 }
 
 fn looks_like_expression(expr: &str) -> bool {
@@ -617,6 +708,35 @@ mod tests {
     fn calculator_rejects_plain_text_and_division_by_zero() {
         assert!(calculator_card("rust ownership").is_none());
         assert!(calculator_card("1 / 0").is_none());
+    }
+
+    #[test]
+    fn percentage_card_handles_common_google_forms() {
+        let card = percentage_card("20% of 80").unwrap();
+        assert_eq!(card.label, "Percentage");
+        assert_eq!(card.value, "16");
+        assert_eq!(card.detail.as_deref(), Some("20 / 100 * 80"));
+
+        assert_eq!(
+            percentage_card("what is 12.5 percent of 240")
+                .unwrap()
+                .value,
+            "30"
+        );
+        assert_eq!(
+            percentage_card("20 is what percent of 80").unwrap().value,
+            "25%"
+        );
+        assert_eq!(
+            percentage_card("what percentage is 3 of 12").unwrap().value,
+            "25%"
+        );
+    }
+
+    #[test]
+    fn percentage_card_rejects_invalid_ratios() {
+        assert!(percentage_card("20 is what percent of 0").is_none());
+        assert!(percentage_card("rust percent of search").is_none());
     }
 
     #[test]

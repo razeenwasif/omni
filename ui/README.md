@@ -91,6 +91,7 @@ The results page can render local answer cards above normal results:
 | Card | Example queries | Source |
 |---|---|---|
 | Calculator | `2+2`, `sqrt(16)`, `2 * (5 + 3)`, `2^8` | Local expression parser. |
+| Percentage | `20% of 80`, `20 is what percent of 80` | Local percentage parser. |
 | Unit conversion | `10 km to miles`, `5 kg in lb`, `32 f to c` | Local conversion table. |
 | Definition | `define entropy`, `what is ownership` | Existing extractive answer from the top result. |
 | Weather | `weather in sydney`, `temperature melbourne`, `forecast for canberra` | Local file from `OMNI_WEATHER_FILE`. |

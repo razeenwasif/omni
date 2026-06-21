@@ -61,6 +61,14 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 55 (percentage rich cards) ✅
+
+Rich answer cards now handle common percentage queries locally: `20% of 80`,
+`12.5 percent of 240`, `20 is what percent of 80`, and `what percentage is 3 of
+12`. Results render as deterministic Percentage cards with the arithmetic shown
+in the detail line, and invalid ratios such as division by zero are rejected.
+Covered by percentage-card parser tests. Below still holds.
+
 ## Status: Phase 54 (Fresh result labels) ✅
 
 Fresh/news results now carry a compact freshness label in both HTML and JSON.
