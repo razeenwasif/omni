@@ -50,6 +50,12 @@ embedding and reranking, then applied as filters over the candidate pool. Positi
 filter-only searches can return matching docs; purely negative searches do not
 seed the entire corpus.
 
+## Did You Mean
+
+When a query returns zero results, Omni can show a `Did you mean` link. The
+candidate correction comes from the indexed title/URL vocabulary and is displayed
+only if the corrected query returns results for the current vertical.
+
 ## Search Verticals
 
 The results page renders Google-style vertical tabs for:

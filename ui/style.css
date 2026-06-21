@@ -415,6 +415,18 @@ body {
 /* ---- hint / empty ---- */
 .hint { color: var(--text-dim); font-size: 15px; line-height: 1.6; }
 .hint strong { color: var(--text); }
+.did-you-mean {
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1.5;
+  margin: 10px 4px 14px;
+}
+.did-you-mean a {
+  color: var(--violet);
+  font-weight: 700;
+  text-decoration: none;
+}
+.did-you-mean a:hover { color: #b3a6ff; text-decoration: underline; }
 .hint kbd {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 12px;

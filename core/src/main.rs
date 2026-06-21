@@ -31,6 +31,7 @@ mod score;
 mod segment;
 mod server;
 mod snippet;
+mod spell;
 mod suggest;
 mod telemetry;
 mod wand;

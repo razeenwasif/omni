@@ -61,6 +61,16 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 50 (Did you mean correction) ✅
+
+Zero-result searches now get a conservative **Did you mean** correction when Omni
+can infer a better query from the indexed vocabulary. Corrections are drawn from
+live document titles and URLs, bounded to small edit distances, and are shown only
+after the corrected query is verified to return results in the active vertical.
+This avoids external dictionaries and avoids suggesting queries Omni cannot
+answer. Covered by vocabulary correction, far-term rejection, and bounded edit
+distance tests. Below still holds.
+
 ## Status: Phase 49 (configured weather rich cards) ✅
 
 Weather queries now render rich cards when `OMNI_WEATHER_FILE` points at a local

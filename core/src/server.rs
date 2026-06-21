@@ -741,7 +741,7 @@ fn results_page(
         // The results surface always tries for a direct answer (extractive, cheap).
         let opts = query::SearchOpts {
             answer: vertical != query::Vertical::Images,
-            ..opts
+            ..opts.clone()
         };
         let start = Instant::now();
         let hits = query::search_with(index, q, 20, opts);
@@ -765,6 +765,9 @@ fn results_page(
     } else if hits.is_empty() {
         if let Some(card) = crate::cards::local_card(q) {
             body.push_str(&render_rich_card(&card, None));
+        }
+        if let Some(correction) = did_you_mean(index, q, opts) {
+            body.push_str(&render_did_you_mean(&correction, vertical));
         }
         body.push_str(&format!(
             "<p class=\"hint\">No {} results for <strong>{}</strong>.</p>",
@@ -946,6 +949,32 @@ fn render_image_grid(q: &str, hits: &[query::Hit]) -> String {
         }
     }
     format!("<div class=\"image-grid\">{items}</div>")
+}
+
+fn did_you_mean(index: &Index, q: &str, opts: query::SearchOpts) -> Option<String> {
+    let correction = crate::spell::correction(index, q)?;
+    let opts = query::SearchOpts {
+        answer: false,
+        ..opts
+    };
+    (!query::search_with(index, &correction, 1, opts).is_empty()).then_some(correction)
+}
+
+fn render_did_you_mean(correction: &str, vertical: query::Vertical) -> String {
+    let href = if vertical == query::Vertical::All {
+        format!("/search?q={}", percent_encode(correction))
+    } else {
+        format!(
+            "/search?q={}&type={}",
+            percent_encode(correction),
+            vertical.param()
+        )
+    };
+    format!(
+        "<p class=\"did-you-mean\">Did you mean <a href=\"{href}\">{query}</a>?</p>",
+        href = html_escape(&href),
+        query = html_escape(correction),
+    )
 }
 
 fn render_news_result(q: &str, h: &query::Hit) -> String {
