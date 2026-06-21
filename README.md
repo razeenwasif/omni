@@ -61,6 +61,14 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 56 (SERP source polish) ✅
+
+Standard web results now render with a compact source row above the title: a
+stable source mark plus the normalized host. The raw URL, highlighted snippet,
+and debug score remain available, but the first scan target is now the source and
+title instead of a bare URL block. Covered by a server-side render test. Below
+still holds.
+
 ## Status: Phase 55 (percentage rich cards) ✅
 
 Rich answer cards now handle common percentage queries locally: `20% of 80`,

@@ -84,6 +84,9 @@ array of `{url, alt}` records ordered by image relevance to the query, and dated
 results include `published` plus `published_display`. Fresh JSON results also
 include `fresh_label` when Omni can classify why the page belongs in the tab.
 
+Standard web results render a source row above the title with a normalized host
+and compact source mark, followed by title, snippet, raw URL, and debug score.
+
 ## Rich Answer Cards
 
 The results page can render local answer cards above normal results:

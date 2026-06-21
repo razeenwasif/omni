@@ -838,21 +838,7 @@ fn results_page(
                 html_escape(vertical.label())
             ));
             for h in &hits {
-                let click = click_url(q, &h.url);
-                body.push_str(&format!(
-                    "<div class=\"result\">\
-                       <a class=\"title\" href=\"{url}\">{title}</a>\
-                       <div class=\"url\">{raw_url}</div>\
-                       <div class=\"snippet\">{snippet}</div>\
-                       <div class=\"score\">score {score:.3}</div>\
-                     </div>",
-                    url = html_escape(&click),
-                    raw_url = html_escape(&h.url),
-                    title = html_escape(&h.title),
-                    // Snippet is already HTML-safe (escaped + <mark> highlights).
-                    snippet = h.snippet,
-                    score = h.score,
-                ));
+                body.push_str(&render_standard_result(q, h));
             }
         }
         let related = related_searches(index, q, vertical, &hits, opts);
@@ -969,6 +955,29 @@ fn render_image_grid(q: &str, hits: &[query::Hit]) -> String {
         }
     }
     format!("<div class=\"image-grid\">{items}</div>")
+}
+
+fn render_standard_result(q: &str, h: &query::Hit) -> String {
+    let click = click_url(q, &h.url);
+    let source = source_label(&h.url);
+    let mark = source_mark(&source);
+    format!(
+        "<article class=\"result\">\
+           <div class=\"result-source\"><span class=\"source-mark\">{mark}</span><span>{source}</span></div>\
+           <a class=\"title\" href=\"{url}\">{title}</a>\
+           <div class=\"snippet\">{snippet}</div>\
+           <div class=\"url\">{raw_url}</div>\
+           <div class=\"score\">score {score:.3}</div>\
+         </article>",
+        mark = html_escape(&mark),
+        source = html_escape(&source),
+        url = html_escape(&click),
+        raw_url = html_escape(&h.url),
+        title = html_escape(&h.title),
+        // Snippet is already HTML-safe (escaped + <mark> highlights).
+        snippet = h.snippet,
+        score = h.score,
+    )
 }
 
 fn ranked_images_for_hit<'a>(q: &str, h: &'a query::Hit) -> Vec<&'a crate::index::Image> {
@@ -1183,6 +1192,14 @@ fn source_label(url: &str) -> String {
         .to_string()
 }
 
+fn source_mark(source: &str) -> String {
+    source
+        .chars()
+        .find(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase().to_string())
+        .unwrap_or_else(|| "O".to_string())
+}
+
 fn format_date(ts: i64) -> String {
     let days = ts.div_euclid(86_400);
     let (year, month, day) = civil_from_days(days);
@@ -1332,6 +1349,27 @@ mod tests {
         assert_eq!(
             image_query_terms(r#"rust OR logo site:example.com -draft "mark""#),
             vec!["rust", "logo", "mark"]
+        );
+    }
+
+    #[test]
+    fn standard_result_renders_source_row() {
+        let h = query::Hit {
+            url: "https://www.example.com/docs/rust".into(),
+            title: "Rust Docs".into(),
+            images: Vec::new(),
+            published: 0,
+            fresh_label: None,
+            snippet: "Ownership <mark>guide</mark>".into(),
+            score: 2.5,
+            answer: None,
+        };
+
+        let html = render_standard_result("rust guide", &h);
+        assert!(html.contains("result-source"));
+        assert!(html.contains("<span class=\"source-mark\">E</span><span>example.com</span>"));
+        assert!(
+            html.contains("/click?q=rust+guide&amp;u=https%3A%2F%2Fwww.example.com%2Fdocs%2Frust")
         );
     }
 }
