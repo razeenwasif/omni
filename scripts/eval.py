@@ -11,11 +11,12 @@ ranking high now credits the score instead of penalizing it.
 The ideal DCG is computed from the *pooled* relevant docs actually found (a deep
 k=50 fetch), so patterns whose docs aren't in the corpus don't deflate the score.
 
-Usage: python3 scripts/eval.py [host]   (default localhost:8085)
+Usage: python3 scripts/eval.py [--fast] [--json [path|-]] [host]
+       default host: localhost:8085
 """
-import sys, json, math, urllib.parse, urllib.request
+import argparse, json, math, urllib.parse, urllib.request
 
-HOST = sys.argv[1] if len(sys.argv) > 1 else "localhost:8085"
+HOST = "localhost:8085"
 
 # A pattern ending in '$' matches the URL's end (the canonical page); otherwise
 # it's a substring (a family). A doc's grade = the max grade over matching patterns.
@@ -175,30 +176,112 @@ def ndcg_at(urls, rel, k=10):
 
 fetch_pool = {}
 
-def main():
-    print(f"Omni graded-relevance eval — {len(QUERIES)} queries @ {HOST}\n")
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Run Omni graded-relevance retrieval eval."
+    )
+    p.add_argument("host", nargs="?", default="localhost:8085")
+    p.add_argument(
+        "--fast",
+        action="store_true",
+        help="skip opt-in reranker modes so the eval only measures normal retrieval",
+    )
+    p.add_argument(
+        "--json",
+        nargs="?",
+        const="-",
+        metavar="PATH",
+        help="write a machine-readable report to PATH, or stdout when omitted/-",
+    )
+    return p.parse_args()
+
+def first_good_rank(urls, rel):
+    for i, url in enumerate(urls[:10], 1):
+        if grade(url, rel) >= 2:
+            return i
+    return None
+
+def run_eval(modes):
     # Build the judged pool once per query (deep fetch at the pool mode).
     for q, rel in QUERIES:
         fetch_pool[id(rel)] = fetch(q, POOL_MODE, 50)
 
-    print(f"{'mode':<16} {'nDCG@10':>8} {'success@10':>11}")
-    print("-" * 38)
-    best = None
-    for label, frag in MODES:
+    rows = []
+    for label, frag in modes:
+        per_query = []
         nd, succ = 0.0, 0
         for q, rel in QUERIES:
             urls = fetch(q, frag, 10)
-            nd += ndcg_at(urls, rel)
-            if any(grade(u, rel) >= 2 for u in urls[:10]):
+            ndcg = ndcg_at(urls, rel)
+            rank = first_good_rank(urls, rel)
+            top_grade = max((grade(u, rel) for u in urls[:10]), default=0)
+            per_query.append({
+                "query": q,
+                "ndcg10": round(ndcg, 6),
+                "success": rank is not None,
+                "first_good_rank": rank,
+                "top_grade": top_grade,
+            })
+            nd += ndcg
+            if rank is not None:
                 succ += 1
-        nd /= len(QUERIES)
-        succ /= len(QUERIES)
-        print(f"{label:<16} {nd:>8.3f} {succ:>11.2f}")
-        if best is None or nd > best[1]:
-            best = (label, nd)
+        rows.append({
+            "label": label,
+            "params": frag,
+            "ndcg10": nd / len(QUERIES),
+            "success10": succ / len(QUERIES),
+            "weak_queries": [q for q in per_query if not q["success"]],
+            "queries": per_query,
+        })
+    return rows
+
+def print_table(rows):
+    print(f"{'mode':<16} {'nDCG@10':>8} {'success@10':>11}")
+    print("-" * 38)
+    best = None
+    for row in rows:
+        print(f"{row['label']:<16} {row['ndcg10']:>8.3f} {row['success10']:>11.2f}")
+        if best is None or row["ndcg10"] > best[1]:
+            best = (row["label"], row["ndcg10"])
     print("-" * 38)
     print(f"best: {best[0]} (nDCG@10 {best[1]:.3f})")
     print("\nsuccess@10 = fraction of queries with a grade>=2 doc in the top 10")
+
+def write_json_report(path, rows):
+    payload = {
+        "host": HOST,
+        "query_count": len(QUERIES),
+        "pool_mode": POOL_MODE,
+        "modes": rows,
+    }
+    data = json.dumps(payload, indent=2, sort_keys=True)
+    if path == "-":
+        print(data)
+    else:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(data)
+            f.write("\n")
+        print(f"\nwrote JSON report to {path}")
+
+def main():
+    global HOST
+    args = parse_args()
+    HOST = args.host
+    modes = [
+        (label, frag)
+        for label, frag in MODES
+        if not (args.fast and "rerank=1" in frag)
+    ]
+    if args.json == "-":
+        rows = run_eval(modes)
+        write_json_report("-", rows)
+        return
+
+    print(f"Omni graded-relevance eval — {len(QUERIES)} queries @ {HOST}\n")
+    rows = run_eval(modes)
+    print_table(rows)
+    if args.json:
+        write_json_report(args.json, rows)
 
 if __name__ == "__main__":
     main()

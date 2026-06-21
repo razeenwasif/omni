@@ -61,6 +61,15 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 58 (eval JSON reports) ✅
+
+`scripts/eval.py` now supports `--json [path|-]` for machine-readable ranking
+reports and `--fast` to skip opt-in reranker modes during normal retrieval checks.
+JSON output includes per-mode nDCG/success metrics plus per-query success,
+first-good-rank, and top-grade diagnostics, making before/after ranking changes
+easier to compare or archive. Verified with Python bytecode compilation. Below
+still holds.
+
 ## Status: Phase 57 (ingest dry-run preflight) ✅
 
 `POST /ingest?dry=1` now parses the same JSON/doc-store payload as live ingest and
@@ -397,9 +406,11 @@ success@10 = 0.97 at sw=2 — no retune. New domains all land (e.g. *"c++ vector
 
 Upgraded `scripts/eval.py` to **graded relevance / nDCG@10** (each query has a set
 of relevant docs with grades, ideal DCG from a pooled deep fetch) so corpus gains
-stay measurable as the index grows. This flipped the earlier single-target tuning:
-graded nDCG@10 peaks at **sw ≈ 1–2** (0.68 vs 0.51 lexical) with success@10 = **1.00
-at sw=2**, so the default semantic weight was retuned **4.0 → 2.0**. Below still holds.
+stay measurable as the index grows. The harness can emit machine-readable reports
+with `--json [path|-]` and skip slow reranker modes with `--fast`. This flipped the
+earlier single-target tuning: graded nDCG@10 peaks at **sw ≈ 1–2** (0.68 vs 0.51
+lexical) with success@10 = **1.00 at sw=2**, so the default semantic weight was
+retuned **4.0 → 2.0**. Below still holds.
 
 ## Status: Phase 27 (corpus ×13 — deeper crawl) ✅
 
