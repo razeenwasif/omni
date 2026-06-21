@@ -22,6 +22,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+const IMAGES_PER_RESULT: usize = 4;
+
 /// What a route produces: a normal page/JSON, or a redirect (used by bangs).
 enum Reply {
     Page {
@@ -592,9 +594,8 @@ fn search_json(index: &Index, q: &str, opts: query::SearchOpts, k: usize) -> Str
             let images = if h.images.is_empty() {
                 String::new()
             } else {
-                let imgs: Vec<String> = h
-                    .images
-                    .iter()
+                let imgs: Vec<String> = ranked_images_for_hit(q, h)
+                    .into_iter()
                     .map(|img| {
                         format!(
                             "{{\"url\":{},\"alt\":{}}}",
@@ -803,7 +804,10 @@ fn results_page(
             }
         }
         if vertical == query::Vertical::Images {
-            let image_count: usize = hits.iter().map(|h| h.images.len().min(4)).sum();
+            let image_count: usize = hits
+                .iter()
+                .map(|h| ranked_images_for_hit(q, h).len().min(IMAGES_PER_RESULT))
+                .sum();
             body.push_str(&format!(
                 "<div class=\"meta\">{} images from {} results</div>",
                 image_count,
@@ -932,7 +936,10 @@ fn render_image_grid(q: &str, hits: &[query::Hit]) -> String {
     let mut items = String::new();
     for h in hits {
         let click = click_url(q, &h.url);
-        for image in h.images.iter().take(4) {
+        for image in ranked_images_for_hit(q, h)
+            .into_iter()
+            .take(IMAGES_PER_RESULT)
+        {
             let label = if image.alt.is_empty() {
                 &h.title
             } else {
@@ -953,6 +960,60 @@ fn render_image_grid(q: &str, hits: &[query::Hit]) -> String {
         }
     }
     format!("<div class=\"image-grid\">{items}</div>")
+}
+
+fn ranked_images_for_hit<'a>(q: &str, h: &'a query::Hit) -> Vec<&'a crate::index::Image> {
+    let terms = image_query_terms(q);
+    let title = h.title.to_lowercase();
+    let mut ranked: Vec<(usize, usize, &crate::index::Image)> = h
+        .images
+        .iter()
+        .enumerate()
+        .map(|(idx, image)| (image_match_score(&terms, &title, image), idx, image))
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    ranked.into_iter().map(|(_, _, image)| image).collect()
+}
+
+fn image_query_terms(q: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut terms = Vec::new();
+    for part in q.split_whitespace() {
+        let part = part.trim_matches('"');
+        if part.eq_ignore_ascii_case("or") || part.starts_with('-') || part.contains(':') {
+            continue;
+        }
+        for token in crate::analyze::tokenize(part) {
+            if token.len() < 2 || crate::analyze::is_stopword(&token) {
+                continue;
+            }
+            if seen.insert(token.clone()) {
+                terms.push(token);
+            }
+        }
+    }
+    terms
+}
+
+fn image_match_score(terms: &[String], title: &str, image: &crate::index::Image) -> usize {
+    if terms.is_empty() {
+        return usize::from(!image.alt.is_empty());
+    }
+    let alt = image.alt.to_lowercase();
+    let url = image.url.to_lowercase();
+    let mut score = usize::from(!alt.is_empty());
+    for term in terms {
+        if !alt.is_empty() && alt.contains(term) {
+            score += 8;
+        }
+        if url.contains(term) {
+            score += 5;
+        }
+        if title.contains(term) {
+            score += 2;
+        }
+    }
+    score
 }
 
 fn did_you_mean(index: &Index, q: &str, opts: query::SearchOpts) -> Option<String> {
@@ -1220,4 +1281,47 @@ fn json_string(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit(images: Vec<crate::index::Image>) -> query::Hit {
+        query::Hit {
+            url: "https://example.com/page".into(),
+            title: "Rust media gallery".into(),
+            images,
+            published: 0,
+            snippet: String::new(),
+            score: 1.0,
+            answer: None,
+        }
+    }
+
+    #[test]
+    fn image_grid_ranks_thumbnails_by_query_metadata() {
+        let h = hit(vec![
+            crate::index::Image {
+                url: "https://cdn.example.com/banner.png".into(),
+                alt: "Header artwork".into(),
+            },
+            crate::index::Image {
+                url: "https://cdn.example.com/rust-logo.png".into(),
+                alt: "Ferris Rust logo".into(),
+            },
+        ]);
+
+        let ranked = ranked_images_for_hit("rust logo", &h);
+        assert_eq!(ranked[0].url, "https://cdn.example.com/rust-logo.png");
+        assert_eq!(ranked[1].url, "https://cdn.example.com/banner.png");
+    }
+
+    #[test]
+    fn image_query_terms_ignore_search_operators() {
+        assert_eq!(
+            image_query_terms(r#"rust OR logo site:example.com -draft "mark""#),
+            vec!["rust", "logo", "mark"]
+        );
+    }
 }

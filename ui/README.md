@@ -72,7 +72,7 @@ The results page renders Google-style vertical tabs for:
 | Tab | `type=` value | Behavior |
 |---|---|---|
 | All | `all` or omitted | Normal ranking. |
-| Images | `images` | Keeps pages with crawler-extracted image metadata and renders a thumbnail grid. |
+| Images | `images` | Keeps pages with crawler-extracted image metadata and renders a query-ranked thumbnail grid. |
 | News/Fresh | `fresh` | Keeps dated pages plus strong news/release/changelog pages, applies stronger recency ranking, and renders date/source-first news cards. |
 | Docs | `docs` | Keeps documentation/reference/guide/manual-like pages. |
 | Code | `code` | Keeps repository/package/API/source-like pages. |
@@ -80,8 +80,8 @@ The results page renders Google-style vertical tabs for:
 
 Submitting from a non-All tab preserves the active `type=` value. JSON clients can
 use the same parameter with `fmt=json`; image-bearing results include an `images`
-array of `{url, alt}` records, and dated results include `published` plus
-`published_display`.
+array of `{url, alt}` records ordered by image relevance to the query, and dated
+results include `published` plus `published_display`.
 
 ## Rich Answer Cards
 

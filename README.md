@@ -61,6 +61,16 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 53 (query-aware image results) ✅
+
+The Images vertical now ranks each result page's extracted thumbnails by the
+current query before rendering or returning JSON. Image alt text is weighted
+highest, image URLs are also considered, and page titles remain a light fallback;
+operator tokens such as `site:` and standalone `OR` are ignored for image scoring.
+The HTML grid still keeps a stable per-result cap, but the visible thumbnails are
+now the most query-relevant images for that page. Covered by server-side image
+ranking tests. Below still holds.
+
 ## Status: Phase 52 (more Google-style operators) ✅
 
 Omni now supports `filetype:ext` and `inurl:text` alongside the existing
