@@ -61,6 +61,15 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 52 (more Google-style operators) ✅
+
+Omni now supports `filetype:ext` and `inurl:text` alongside the existing
+`site:`, `-term`, `intitle:`, `after:`, and `before:` operators. Standalone `OR`
+is stripped from model/query text so `rust OR go` keeps the intended terms without
+polluting lexical or semantic retrieval. `filetype:` and `inurl:` can also seed
+filter-only searches, matching the behavior of the earlier positive filters.
+Covered by parser and end-to-end operator tests. Below still holds.
+
 ## Status: Phase 51 (related search refinements) ✅
 
 Result pages now show verified related-search chips under the result list. Omni

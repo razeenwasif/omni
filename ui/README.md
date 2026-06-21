@@ -42,8 +42,11 @@ The results endpoint accepts a small Google-style operator set:
 | `site:host` / `site:host/path` | Keep results whose normalized URL starts with that host/path. |
 | `-term` | Exclude docs containing the analyzed term. |
 | `intitle:term` | Require the analyzed term in the document title. |
+| `filetype:pdf` | Keep URLs whose path ends with the requested extension. |
+| `inurl:guide` | Require the lowercase URL to contain the requested substring. |
 | `after:YYYY[-MM-DD]` | Keep dated docs published on or after the date. |
 | `before:YYYY[-MM-DD]` | Keep dated docs published before the date. |
+| `OR` | Standalone separator; removed from model/query text so either term can score normally. |
 
 Recognized operators are removed from the lexical/semantic query text before
 embedding and reranking, then applied as filters over the candidate pool. Positive

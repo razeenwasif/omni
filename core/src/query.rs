@@ -150,6 +150,10 @@ struct ParsedQuery {
     site_filters: Vec<String>,
     /// `intitle:` terms that must appear in the document title.
     title_terms: Vec<String>,
+    /// File extensions accepted by `filetype:`.
+    filetypes: Vec<String>,
+    /// URL substrings required by `inurl:`.
+    inurl_terms: Vec<String>,
     /// Keep docs published on/after this unix timestamp.
     after: Option<i64>,
     /// Keep docs published before this unix timestamp.
@@ -161,6 +165,8 @@ struct OperatorParse {
     exclude_terms: Vec<String>,
     site_filters: Vec<String>,
     title_terms: Vec<String>,
+    filetypes: Vec<String>,
+    inurl_terms: Vec<String>,
     after: Option<i64>,
     before: Option<i64>,
 }
@@ -218,6 +224,8 @@ fn parse_query(query: &str) -> ParsedQuery {
         exclude_terms: ops.exclude_terms,
         site_filters: ops.site_filters,
         title_terms: ops.title_terms,
+        filetypes: ops.filetypes,
+        inurl_terms: ops.inurl_terms,
         after: ops.after,
         before: ops.before,
     }
@@ -228,6 +236,8 @@ fn parse_operators(query: &str) -> OperatorParse {
     let mut exclude_terms = Vec::new();
     let mut site_filters = Vec::new();
     let mut title_terms = Vec::new();
+    let mut filetypes = Vec::new();
+    let mut inurl_terms = Vec::new();
     let mut after = None;
     let mut before = None;
 
@@ -257,6 +267,22 @@ fn parse_operators(query: &str) -> OperatorParse {
                 continue;
             }
         }
+        if let Some(ext) = lower.strip_prefix("filetype:") {
+            if let Some(ext) = normalize_filetype(ext) {
+                filetypes.push(ext);
+                continue;
+            }
+        }
+        if let Some(term) = lower.strip_prefix("inurl:") {
+            let term = term.trim().trim_matches('/').to_string();
+            if !term.is_empty() {
+                inurl_terms.push(term);
+                continue;
+            }
+        }
+        if lower == "or" {
+            continue;
+        }
         if let Some(date) = lower.strip_prefix("after:") {
             if let Some(ts) = parse_operator_date(date) {
                 after = Some(ts);
@@ -277,6 +303,8 @@ fn parse_operators(query: &str) -> OperatorParse {
         exclude_terms: dedup_strings(exclude_terms),
         site_filters: dedup_strings(site_filters),
         title_terms: dedup_strings(title_terms),
+        filetypes: dedup_strings(filetypes),
+        inurl_terms: dedup_strings(inurl_terms),
         after,
         before,
     }
@@ -326,6 +354,15 @@ fn normalize_site_filter(site: &str) -> Option<String> {
     (!site.is_empty()).then_some(site)
 }
 
+fn normalize_filetype(ext: &str) -> Option<String> {
+    let ext = ext
+        .trim()
+        .trim_start_matches('.')
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_lowercase();
+    (!ext.is_empty()).then_some(ext)
+}
+
 fn parse_operator_date(date: &str) -> Option<i64> {
     if date.len() == 4 && date.bytes().all(|b| b.is_ascii_digit()) {
         let ts = crate::docstore::parse_published(&format!("{date}-01-01"));
@@ -338,6 +375,8 @@ fn parse_operator_date(date: &str) -> Option<i64> {
 fn has_positive_filter(parsed: &ParsedQuery) -> bool {
     !parsed.site_filters.is_empty()
         || !parsed.title_terms.is_empty()
+        || !parsed.filetypes.is_empty()
+        || !parsed.inurl_terms.is_empty()
         || parsed.after.is_some()
         || parsed.before.is_some()
 }
@@ -360,6 +399,8 @@ fn apply_operator_filters(
     if parsed.exclude_terms.is_empty()
         && parsed.site_filters.is_empty()
         && parsed.title_terms.is_empty()
+        && parsed.filetypes.is_empty()
+        && parsed.inurl_terms.is_empty()
         && parsed.after.is_none()
         && parsed.before.is_none()
     {
@@ -384,6 +425,21 @@ fn doc_matches_operators(seg: &Segment, local: usize, parsed: &ParsedQuery) -> b
             return false;
         }
     }
+    if !parsed.filetypes.is_empty() {
+        let ext = url_filetype(&seg.docs[local].url);
+        if !ext
+            .as_ref()
+            .is_some_and(|ext| parsed.filetypes.iter().any(|want| want == ext))
+        {
+            return false;
+        }
+    }
+    if !parsed.inurl_terms.is_empty() {
+        let url = seg.docs[local].url.to_lowercase();
+        if !parsed.inurl_terms.iter().all(|term| url.contains(term)) {
+            return false;
+        }
+    }
     if let Some(after) = parsed.after {
         let published = seg.docs[local].published;
         if published == 0 || published < after {
@@ -402,6 +458,19 @@ fn doc_matches_operators(seg: &Segment, local: usize, parsed: &ParsedQuery) -> b
         }
     }
     true
+}
+
+fn url_filetype(url: &str) -> Option<String> {
+    let path = url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(url)
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url);
+    let last = path.rsplit('/').next().unwrap_or(path);
+    let (_, ext) = last.rsplit_once('.')?;
+    normalize_filetype(ext)
 }
 
 fn apply_vertical_filter(
@@ -1452,12 +1521,14 @@ mod tests {
     #[test]
     fn operators_are_parsed_out_of_model_query() {
         let parsed = parse_query(
-            r#"rust ownership site:doc.rust-lang.org -unsafe intitle:book after:2025 "borrow checker""#,
+            r#"rust OR ownership site:doc.rust-lang.org -unsafe intitle:book filetype:pdf inurl:guide after:2025 "borrow checker""#,
         );
         assert_eq!(parsed.clean_text, r#"rust ownership "borrow checker""#);
         assert_eq!(parsed.site_filters, vec!["doc.rust-lang.org"]);
         assert_eq!(parsed.exclude_terms, vec!["unsaf"]);
         assert_eq!(parsed.title_terms, vec!["book"]);
+        assert_eq!(parsed.filetypes, vec!["pdf"]);
+        assert_eq!(parsed.inurl_terms, vec!["guide"]);
         assert_eq!(
             parsed.after,
             Some(crate::docstore::parse_published("2025-01-01"))
@@ -1501,6 +1572,29 @@ mod tests {
         let hits = search(&idx, "ownership intitle:book", 10);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].url, "a");
+    }
+
+    #[test]
+    fn filetype_and_inurl_operators_filter_results() {
+        let mut idx = Index::new();
+        idx.add_document(
+            "https://example.com/guides/rust-book.pdf".into(),
+            "Rust Book PDF".into(),
+            "ownership borrowing",
+        );
+        idx.add_document(
+            "https://example.com/guides/rust-book.html".into(),
+            "Rust Book HTML".into(),
+            "ownership borrowing",
+        );
+        idx.add_document(
+            "https://example.com/reference/rust-book.pdf".into(),
+            "Rust Book Reference PDF".into(),
+            "ownership borrowing",
+        );
+        let hits = search(&idx, "ownership filetype:pdf inurl:guides", 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].url, "https://example.com/guides/rust-book.pdf");
     }
 
     #[test]
