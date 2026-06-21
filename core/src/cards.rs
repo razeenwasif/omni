@@ -14,10 +14,9 @@ pub struct RichCard {
 }
 
 pub fn local_card(query: &str) -> Option<RichCard> {
-    if is_weather_query(query) {
-        return None;
-    }
-    conversion_card(query).or_else(|| calculator_card(query))
+    weather_card(query)
+        .or_else(|| conversion_card(query))
+        .or_else(|| calculator_card(query))
 }
 
 pub fn is_definition_query(query: &str) -> bool {
@@ -33,9 +32,169 @@ pub fn is_definition_query(query: &str) -> bool {
 pub fn is_weather_query(query: &str) -> bool {
     let q = query.to_lowercase();
     q.starts_with("weather ")
+        || q.trim() == "weather"
         || q.contains(" weather in ")
         || q.starts_with("temperature ")
         || q.contains(" forecast")
+}
+
+fn weather_card(query: &str) -> Option<RichCard> {
+    if !is_weather_query(query) {
+        return None;
+    }
+    let path = std::env::var("OMNI_WEATHER_FILE").ok()?;
+    let data = std::fs::read_to_string(path).ok()?;
+    weather_card_from_str(query, &data)
+}
+
+fn weather_card_from_str(query: &str, data: &str) -> Option<RichCard> {
+    let records = parse_weather_records(data);
+    if records.is_empty() {
+        return None;
+    }
+    let wanted = weather_location(query);
+    let record = if wanted.is_empty() && records.len() == 1 {
+        records.first()?
+    } else {
+        records.iter().find(|r| r.matches(&wanted))?
+    };
+    Some(record.card())
+}
+
+#[derive(Default)]
+struct WeatherRecord {
+    location: String,
+    aliases: Vec<String>,
+    temperature: String,
+    condition: String,
+    feels_like: String,
+    humidity: String,
+    wind: String,
+    updated: String,
+    source: String,
+}
+
+impl WeatherRecord {
+    fn matches(&self, wanted: &str) -> bool {
+        let wanted = normalize_weather_key(wanted);
+        if wanted.is_empty() {
+            return false;
+        }
+        std::iter::once(&self.location)
+            .chain(self.aliases.iter())
+            .any(|name| {
+                let name = normalize_weather_key(name);
+                name == wanted || name.contains(&wanted) || wanted.contains(&name)
+            })
+    }
+
+    fn card(&self) -> RichCard {
+        let mut details = Vec::new();
+        if !self.condition.is_empty() {
+            details.push(self.condition.clone());
+        }
+        if !self.feels_like.is_empty() {
+            details.push(format!("Feels like {}", self.feels_like));
+        }
+        if !self.humidity.is_empty() {
+            details.push(format!("Humidity {}", self.humidity));
+        }
+        if !self.wind.is_empty() {
+            details.push(format!("Wind {}", self.wind));
+        }
+        if !self.updated.is_empty() {
+            details.push(format!("Updated {}", self.updated));
+        }
+        if !self.source.is_empty() {
+            details.push(format!("Source {}", self.source));
+        }
+        RichCard {
+            label: "Weather",
+            title: self.location.clone(),
+            value: self.temperature.clone(),
+            detail: (!details.is_empty()).then(|| details.join(" · ")),
+        }
+    }
+}
+
+fn parse_weather_records(data: &str) -> Vec<WeatherRecord> {
+    data.split("\n\n")
+        .filter_map(|block| {
+            let mut rec = WeatherRecord::default();
+            for line in block.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                let Some((key, val)) = line.split_once(':') else {
+                    continue;
+                };
+                let val = val.trim().to_string();
+                match key.trim().to_ascii_lowercase().as_str() {
+                    "location" | "place" => rec.location = val,
+                    "alias" | "aliases" => {
+                        rec.aliases = val
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    }
+                    "temp" | "temperature" => rec.temperature = val,
+                    "condition" | "summary" => rec.condition = val,
+                    "feels_like" | "feels like" => rec.feels_like = val,
+                    "humidity" => rec.humidity = val,
+                    "wind" => rec.wind = val,
+                    "updated" | "observed" => rec.updated = val,
+                    "source" => rec.source = val,
+                    _ => {}
+                }
+            }
+            (!rec.location.is_empty() && !rec.temperature.is_empty()).then_some(rec)
+        })
+        .collect()
+}
+
+fn weather_location(query: &str) -> String {
+    let mut q = query.trim().to_lowercase();
+    if matches!(q.as_str(), "weather" | "forecast" | "temperature") {
+        return String::new();
+    }
+    for prefix in [
+        "weather forecast for ",
+        "weather forecast in ",
+        "weather in ",
+        "weather for ",
+        "weather at ",
+        "weather ",
+        "temperature in ",
+        "temperature for ",
+        "temperature ",
+        "forecast in ",
+        "forecast for ",
+        "forecast ",
+    ] {
+        if let Some(rest) = q.strip_prefix(prefix) {
+            q = rest.trim().to_string();
+            break;
+        }
+    }
+    q.trim_matches(|c: char| c == '?' || c.is_ascii_whitespace())
+        .to_string()
+}
+
+fn normalize_weather_key(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn calculator_card(query: &str) -> Option<RichCard> {
@@ -485,5 +644,41 @@ mod tests {
         assert!(is_definition_query("what is ownership"));
         assert!(is_weather_query("weather in sydney"));
         assert!(!is_weather_query("whether rust is fast"));
+    }
+
+    #[test]
+    fn weather_card_uses_configured_records_and_aliases() {
+        let data = "location: Sydney, NSW\n\
+                    aliases: sydney, syd\n\
+                    temperature: 18 C\n\
+                    condition: Cloudy\n\
+                    feels_like: 17 C\n\
+                    humidity: 72%\n\
+                    wind: SE 12 km/h\n\
+                    updated: 2026-06-22T09:00:00+10:00\n\
+                    source: BOM cache\n\
+                    \n\
+                    location: Melbourne\n\
+                    temperature: 11 C\n\
+                    condition: Rain";
+
+        let card = weather_card_from_str("weather in syd", data).unwrap();
+        assert_eq!(card.label, "Weather");
+        assert_eq!(card.title, "Sydney, NSW");
+        assert_eq!(card.value, "18 C");
+        assert!(card.detail.unwrap().contains("Humidity 72%"));
+    }
+
+    #[test]
+    fn weather_card_requires_data_but_allows_single_default_location() {
+        let data = "location: Canberra\n\
+                    temperature: 9 C\n\
+                    condition: Clear";
+        assert_eq!(
+            weather_card_from_str("weather", data).unwrap().title,
+            "Canberra"
+        );
+        assert!(weather_card_from_str("weather in perth", data).is_none());
+        assert!(weather_card_from_str("weather in perth", "").is_none());
     }
 }

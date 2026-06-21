@@ -61,6 +61,32 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 49 (configured weather rich cards) ✅
+
+Weather queries now render rich cards when `OMNI_WEATHER_FILE` points at a local
+weather data file. Omni still never fabricates weather: if the file is absent, the
+location is missing, or the query does not match a configured location/alias, the
+weather card is skipped. Records are blank-line separated `key: value` blocks with
+`location`, `temperature`, and optional `aliases`, `condition`, `feels_like`,
+`humidity`, `wind`, `updated`, and `source`. A single configured location can
+answer bare `weather`; multiple locations require a query such as `weather in
+sydney`. Covered by weather parsing, alias matching, and no-data tests. Below
+still holds.
+
+Example:
+
+```text
+location: Sydney, NSW
+aliases: sydney, syd
+temperature: 18 C
+condition: Cloudy
+feels_like: 17 C
+humidity: 72%
+wind: SE 12 km/h
+updated: 2026-06-22T09:00:00+10:00
+source: local weather cache
+```
+
 ## Status: Phase 48 (Fresh page-type detection) ✅
 
 `type=fresh` now recognizes strong news/update/release/changelog pages even when
@@ -120,9 +146,9 @@ exponents, unary signs, and `sqrt(...)`; unit-conversion cards handle common
 length, mass, and temperature conversions (`10 km to miles`, `5 kg in lb`,
 `32 f to c`). Definition queries (`define ...`, `definition of ...`,
 `what is ...`) reuse Omni's existing extractive answer as a definition-styled
-card with source attribution. Weather-style queries are detected as a future hook
-but do not render fabricated data until Omni has a weather source. Covered by
-calculator/conversion/detection tests. Below still holds.
+card with source attribution. Weather cards render from configured local weather
+data only. Covered by calculator/conversion/weather/detection tests. Below still
+holds.
 
 ## Status: Phase 42 (search vertical tabs) ✅
 

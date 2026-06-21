@@ -77,9 +77,12 @@ The results page can render local answer cards above normal results:
 | Calculator | `2+2`, `sqrt(16)`, `2 * (5 + 3)`, `2^8` | Local expression parser. |
 | Unit conversion | `10 km to miles`, `5 kg in lb`, `32 f to c` | Local conversion table. |
 | Definition | `define entropy`, `what is ownership` | Existing extractive answer from the top result. |
+| Weather | `weather in sydney`, `temperature melbourne`, `forecast for canberra` | Local file from `OMNI_WEATHER_FILE`. |
 
-Weather-style queries are detected as a future hook, but Omni does not render
-weather data until a local or configured weather source exists.
+Weather records are blank-line separated `key: value` blocks. Each record needs
+`location` and `temperature`; optional keys are `aliases`, `condition`,
+`feels_like`, `humidity`, `wind`, `updated`, and `source`. Omni skips weather
+cards when no configured record matches, so it does not fabricate weather data.
 
 ## Telemetry
 
