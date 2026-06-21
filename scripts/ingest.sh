@@ -18,10 +18,15 @@
 #   scripts/ingest.sh < records.txt              # ingest from stdin
 #   ls store/*.doc | head | xargs cat | scripts/ingest.sh   # re-ingest some docs
 # Override the target with OMNI_HOST (default localhost:8080).
+# Set OMNI_DRY=1 to call /ingest?dry=1 and preflight without changing the index.
 set -euo pipefail
 
 HOST="${OMNI_HOST:-localhost:8080}"
 DATA="${1:-/dev/stdin}"
+PATH_SUFFIX="/ingest"
+if [[ "${OMNI_DRY:-0}" == "1" ]]; then
+  PATH_SUFFIX="/ingest?dry=1"
+fi
 
-curl -fsS -X POST --data-binary "@${DATA}" "http://${HOST}/ingest"
+curl -fsS -X POST --data-binary "@${DATA}" "http://${HOST}${PATH_SUFFIX}"
 echo

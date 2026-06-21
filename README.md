@@ -61,6 +61,14 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 57 (ingest dry-run preflight) ✅
+
+`POST /ingest?dry=1` now parses the same JSON/doc-store payload as live ingest and
+reports `received`, `added`, `skipped`, `embedded`, `live_docs`, and `segments`
+without swapping or persisting the index. Normal `POST /ingest` keeps the live
+atomic-swap behavior and now returns the same operational counters. Covered by a
+server-side dry-run test. Below still holds.
+
 ## Status: Phase 56 (SERP source polish) ✅
 
 Standard web results now render with a compact source row above the title: a
@@ -439,7 +447,8 @@ lexical alone returned junk. Below still holds.
 
 Two ways to grow the index without re-crawling, plus first-class necessity sites:
 - **`POST /ingest`** adds doc-store records to the *running* index (new segment →
-  atomic swap → background merge folds it in); `scripts/ingest.sh` is a helper.
+  atomic swap → background merge folds it in); `POST /ingest?dry=1` preflights a
+  batch without swapping or persisting. `scripts/ingest.sh` is a helper.
 - **`!bang` shortcuts** (`bangs.rs`): `!gh rust`, `!yt lofi`, `!ol thesis` redirect
   (302) to that site's own search — the *necessity* sites you act through, not
   search within. Plain searches stay on the index.

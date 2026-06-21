@@ -149,8 +149,12 @@ fn handle(
         if content_length > 0 {
             reader.read_exact(&mut body)?;
         }
+        let query_str = path.split_once('?').map(|(_, q)| q).unwrap_or("");
+        let dry_run = query_param(query_str, "dry")
+            .as_deref()
+            .is_some_and(|v| matches!(v, "1" | "true" | "yes"));
         let dpath = dir.as_ref().map(|p| p.as_path());
-        ingest_reply(&live, dpath, &String::from_utf8_lossy(&body))
+        ingest_reply(&live, dpath, &String::from_utf8_lossy(&body), dry_run)
     } else {
         // Cheap snapshot for this request; a concurrent background swap won't
         // disturb it.
@@ -282,7 +286,12 @@ fn route(path: &str, index: &Index, suggester: &Suggester, telemetry: &Telemetry
 /// the *new* urls as a fresh segment, embed them if the index is embedded, and
 /// atomically swap the grown index in (persisting it). Already-indexed urls are
 /// skipped — use the offline `--update` path to replace existing pages.
-fn ingest_reply(live: &Arc<LiveIndex>, dir: Option<&std::path::Path>, body: &str) -> Reply {
+fn ingest_reply(
+    live: &Arc<LiveIndex>,
+    dir: Option<&std::path::Path>,
+    body: &str,
+    dry_run: bool,
+) -> Reply {
     let snap = live.snapshot();
     // Two accepted formats: JSON `{url,title,text}` (or an array) — what the Flux
     // browser POSTs for the page it's viewing — or the doc-store text format.
@@ -331,19 +340,36 @@ fn ingest_reply(live: &Arc<LiveIndex>, dir: Option<&std::path::Path>, body: &str
         added += 1;
     }
 
-    if added > 0 {
+    let mut embedded = 0usize;
+    if added > 0 && !dry_run {
         if staging.embedder().enabled() {
             if let Some(e) = crate::embed::Embedder::from_config(staging.embedder()) {
-                staging.embed_missing(&e);
+                embedded = staging.embed_missing(&e);
             }
         }
         let next = snap.with_appended(&staging);
         crate::live::commit(live, next, dir);
         println!("omni: ingested {added} doc(s) ({skipped} skipped) — live swap");
+    } else if dry_run {
+        println!("omni: ingest dry-run — would add {added} doc(s) ({skipped} skipped)");
     }
+    let live_docs = if dry_run {
+        snap.doc_count()
+    } else {
+        live.snapshot().doc_count()
+    };
+    let segments = if dry_run {
+        snap.segment_count()
+    } else {
+        live.snapshot().segment_count()
+    };
     json(
         "200 OK",
-        format!("{{\"added\":{added},\"skipped\":{skipped}}}"),
+        format!(
+            "{{\"dry_run\":{dry_run},\"received\":{},\"added\":{added},\"skipped\":{skipped},\"embedded\":{embedded},\"live_docs\":{live_docs},\"segments\":{segments},\"persist_requested\":{}}}",
+            records.len(),
+            !dry_run && added > 0 && dir.is_some()
+        ),
     )
 }
 
@@ -1371,5 +1397,25 @@ mod tests {
         assert!(
             html.contains("/click?q=rust+guide&amp;u=https%3A%2F%2Fwww.example.com%2Fdocs%2Frust")
         );
+    }
+
+    #[test]
+    fn ingest_dry_run_reports_without_swapping_index() {
+        let live = LiveIndex::new(Index::new());
+        let body = "url: https://example.com/new\n\
+                    title: New Doc\n\
+                    \n\
+                    rust ownership guide";
+
+        let reply = ingest_reply(&live, None, body, true);
+        let Reply::Page { status, body, .. } = reply else {
+            panic!("ingest should return JSON page");
+        };
+
+        assert_eq!(status, "200 OK");
+        assert!(body.contains("\"dry_run\":true"));
+        assert!(body.contains("\"received\":1"));
+        assert!(body.contains("\"added\":1"));
+        assert_eq!(live.snapshot().doc_count(), 0);
     }
 }

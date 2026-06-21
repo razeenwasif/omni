@@ -121,6 +121,10 @@ the stat cards and telemetry panels.
 Telemetry is local to the running Omni process and resets on restart.
 Programmatic/eval searches using `fmt=json` are not recorded.
 
+`POST /ingest?dry=1` preflights the same live-ingest payload without changing the
+index. Both dry-run and real ingest responses include operational counters for
+`received`, `added`, `skipped`, `embedded`, `live_docs`, and `segments`.
+
 ## How it's served
 
 Both files are baked into the `omni` binary at compile time via `include_str!`
