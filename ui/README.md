@@ -56,6 +56,12 @@ When a query returns zero results, Omni can show a `Did you mean` link. The
 candidate correction comes from the indexed title/URL vocabulary and is displayed
 only if the corrected query returns results for the current vertical.
 
+## Related Searches
+
+Non-empty result pages can show related-search chips below the result list.
+Refinements are mined from top-result title terms, preserve the active vertical,
+and are displayed only after Omni verifies that the refined query has results.
+
 ## Search Verticals
 
 The results page renders Google-style vertical tabs for:

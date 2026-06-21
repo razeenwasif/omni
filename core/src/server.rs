@@ -842,6 +842,10 @@ fn results_page(
                 ));
             }
         }
+        let related = related_searches(index, q, vertical, &hits, opts);
+        if !related.is_empty() {
+            body.push_str(&render_related_searches(&related, vertical));
+        }
     }
 
     let shell_class = if q.is_empty() {
@@ -974,6 +978,75 @@ fn render_did_you_mean(correction: &str, vertical: query::Vertical) -> String {
         "<p class=\"did-you-mean\">Did you mean <a href=\"{href}\">{query}</a>?</p>",
         href = html_escape(&href),
         query = html_escape(correction),
+    )
+}
+
+fn related_searches(
+    index: &Index,
+    q: &str,
+    vertical: query::Vertical,
+    hits: &[query::Hit],
+    opts: query::SearchOpts,
+) -> Vec<String> {
+    let q_terms: std::collections::HashSet<String> =
+        crate::analyze::tokenize(q).into_iter().collect();
+    if q_terms.is_empty() {
+        return Vec::new();
+    }
+
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for hit in hits.iter().take(8) {
+        for token in crate::analyze::tokenize(&hit.title) {
+            if token.len() >= 3 && !crate::analyze::is_stopword(&token) && !q_terms.contains(&token)
+            {
+                *counts.entry(token).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let mut ranked: Vec<(usize, String)> = counts.into_iter().map(|(t, n)| (n, t)).collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+
+    let mut out = Vec::new();
+    let opts = query::SearchOpts {
+        answer: false,
+        vertical,
+        ..opts
+    };
+    for (_, token) in ranked {
+        let candidate = format!("{q} {token}");
+        if !query::search_with(index, &candidate, 1, opts.clone()).is_empty() {
+            out.push(candidate);
+            if out.len() >= 6 {
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn render_related_searches(items: &[String], vertical: query::Vertical) -> String {
+    let chips: String = items
+        .iter()
+        .map(|item| {
+            let href = if vertical == query::Vertical::All {
+                format!("/search?q={}", percent_encode(item))
+            } else {
+                format!(
+                    "/search?q={}&type={}",
+                    percent_encode(item),
+                    vertical.param()
+                )
+            };
+            format!(
+                "<a class=\"related-chip\" href=\"{href}\">{label}</a>",
+                href = html_escape(&href),
+                label = html_escape(item),
+            )
+        })
+        .collect();
+    format!(
+        "<section class=\"related-searches\"><div class=\"related-title\">Related searches</div><div class=\"related-list\">{chips}</div></section>"
     )
 }
 

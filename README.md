@@ -61,6 +61,14 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 51 (related search refinements) ✅
+
+Result pages now show verified related-search chips under the result list. Omni
+mines refinement terms from the current top result titles, filters out terms
+already present in the query, preserves the active vertical in chip links, and
+only displays refinements whose candidate query returns results. This keeps the
+feature local and avoids dead-end suggestions. Below still holds.
+
 ## Status: Phase 50 (Did you mean correction) ✅
 
 Zero-result searches now get a conservative **Did you mean** correction when Omni
