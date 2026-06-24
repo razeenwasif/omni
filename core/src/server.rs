@@ -66,6 +66,7 @@ pub fn serve(
     println!("  GET  /ac?q=...      autocomplete (JSON)");
     println!("  GET  /answer?q=...  generative RAG answer (JSON; opt-in, slow)");
     println!("  GET  /stats         index stats (JSON)");
+    println!("  GET  /graph?n=&k=   semantic graph: top-n docs + k neighbours (JSON)");
     println!("  GET  /dashboard     index dashboard (HTML)");
     println!("  POST /ingest        add doc-store records to the live index");
 
@@ -234,6 +235,13 @@ fn route(path: &str, index: &Index, suggester: &Suggester, telemetry: &Telemetry
             json("200 OK", answer_json(index, &q, &model))
         }
         "/stats" => json("200 OK", stats_json(index, telemetry)),
+        // Semantic graph of the index for the dashboard's graph view (Flux #119):
+        // top-N docs by PageRank as nodes, edges = top-k cosine neighbours among them.
+        "/graph" => {
+            let n = query_param(query_str, "n").and_then(|v| v.parse().ok()).unwrap_or(300usize).clamp(1, 1500);
+            let k = query_param(query_str, "k").and_then(|v| v.parse().ok()).unwrap_or(6usize).clamp(1, 16);
+            json("200 OK", graph_json(index, n, k))
+        }
         "/sites" => json("200 OK", sites_json()),
         "/click" => match query_param(query_str, "u").filter(|u| safe_redirect_url(u)) {
             Some(url) => {
@@ -579,6 +587,84 @@ fn stats_json(index: &Index, telemetry: &Telemetry) -> String {
         top_queries = top_queries.join(","),
         top_clicks = top_clicks.join(","),
     )
+}
+
+/// Semantic graph of the index (Flux dashboard graph view): the top `n_nodes`
+/// documents by PageRank, with an edge to each node's top `k_edges` most-similar
+/// peers *within that set* (cosine over each doc's first passage embedding). The
+/// pairwise pass is O(n²·dim) — fine for n in the hundreds, which is also all a
+/// force graph can render legibly. Returns `{nodes:[{id,title,url,rank}],
+/// edges:[{s,t,w}]}` where `s`/`t` are node indices.
+fn graph_json(index: &Index, n_nodes: usize, k_edges: usize) -> String {
+    // Top docs by PageRank.
+    let mut ranked: Vec<(f64, usize, usize)> = Vec::new(); // (rank, seg, local)
+    for (si, seg) in index.segments().iter().enumerate() {
+        for (local, d) in seg.docs.iter().enumerate() {
+            if !d.deleted {
+                ranked.push((d.rank, si, local));
+            }
+        }
+    }
+    ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    ranked.truncate(n_nodes);
+
+    // One L2-normalized representative vector per node (its first passage), so
+    // cosine == dot. `None` for docs with no embedding (rendered as lone nodes).
+    let reps: Vec<Option<Vec<f32>>> = ranked
+        .iter()
+        .map(|&(_, si, local)| {
+            index.segments()[si].passages(local).into_iter().next().map(|mut v| {
+                let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if norm > 0.0 {
+                    for x in &mut v {
+                        *x /= norm;
+                    }
+                }
+                v
+            })
+        })
+        .collect();
+
+    const MIN_SIM: f32 = 0.5; // below this, two docs aren't meaningfully related
+    let mut edge_w: std::collections::HashMap<(usize, usize), f32> = std::collections::HashMap::new();
+    for i in 0..ranked.len() {
+        let Some(vi) = &reps[i] else { continue };
+        let mut sims: Vec<(usize, f32)> = Vec::new();
+        for j in 0..ranked.len() {
+            if i == j {
+                continue;
+            }
+            if let Some(vj) = &reps[j] {
+                if vi.len() == vj.len() {
+                    let s: f32 = vi.iter().zip(vj).map(|(a, b)| a * b).sum();
+                    if s >= MIN_SIM {
+                        sims.push((j, s));
+                    }
+                }
+            }
+        }
+        sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        for &(j, s) in sims.iter().take(k_edges) {
+            let key = if i < j { (i, j) } else { (j, i) }; // undirected, dedup
+            let e = edge_w.entry(key).or_insert(0.0);
+            if s > *e {
+                *e = s;
+            }
+        }
+    }
+
+    let nodes: Vec<String> = ranked
+        .iter()
+        .map(|&(rank, si, local)| {
+            let d = &index.segments()[si].docs[local];
+            format!("{{\"title\":{},\"url\":{},\"rank\":{rank:.6}}}", json_string(&d.title), json_string(&d.url))
+        })
+        .collect();
+    let edges: Vec<String> = edge_w
+        .iter()
+        .map(|(&(a, b), &w)| format!("{{\"s\":{a},\"t\":{b},\"w\":{w:.4}}}"))
+        .collect();
+    format!("{{\"nodes\":[{}],\"edges\":[{}]}}", nodes.join(","), edges.join(","))
 }
 
 /// Parse retrieval tuning from the query string: `lex` (lexical-only),
