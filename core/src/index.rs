@@ -38,7 +38,18 @@ pub struct Index {
     embedder: EmbedderConfig,
     /// Approximate nearest-neighbor graph over the live embeddings, for
     /// sub-linear semantic recall. `None` until `build_ann` (or too few vectors).
-    ann: Option<crate::hnsw::Hnsw>,
+    ///
+    /// Behind an `Arc` so a derived index can **share** the graph rather than
+    /// rebuild it. `with_appended` only ever pushes segments onto the end, so every
+    /// address `(segment, local)` the graph already holds stays valid: the shared
+    /// graph is correct for the appended index, merely blind to the newly added
+    /// docs until a background refresh rebuilds it (`live::spawn_ann_refresher`).
+    ann: Option<Arc<crate::hnsw::Hnsw>>,
+    /// How many leading segments `ann` was built over. Segments from this index
+    /// onward were appended afterwards and are **not** in the graph, so semantic
+    /// retrieval scores them exactly instead (`query::semantic_ranking`). Equal to
+    /// `segments.len()` right after a build; it only lags after `with_appended`.
+    ann_segments: usize,
     /// When true, the ANN graph keeps no RAM vector copy and decodes embeddings
     /// from the segments on demand (saves memory at scale; slower per query).
     ann_lazy: bool,
@@ -52,6 +63,7 @@ impl Index {
             url_to_addr: HashMap::new(),
             embedder: EmbedderConfig::none(),
             ann: None,
+            ann_segments: 0,
             ann_lazy: false,
         }
     }
@@ -239,18 +251,32 @@ impl Index {
         }
         self.embedder.dim = 0;
         self.ann = None;
+        self.ann_segments = 0;
     }
 
     // ---- approximate nearest neighbors (HNSW) ------------------------------
 
     /// The ANN graph for semantic recall, if one has been built.
     pub fn ann(&self) -> Option<&crate::hnsw::Hnsw> {
-        self.ann.as_ref()
+        self.ann.as_deref()
     }
 
     /// Install a prebuilt ANN graph (e.g. loaded from the `ann` sidecar).
+    ///
+    /// Coverage is read off the graph rather than assumed to be the whole index: a
+    /// persisted graph can predate segments that `/ingest` appended after it was
+    /// built (the append shares the graph instead of rebuilding it, and both are
+    /// saved), and treating those segments as covered would make their documents
+    /// semantically invisible until the next rebuild.
     pub fn set_ann(&mut self, ann: crate::hnsw::Hnsw) {
-        self.ann = Some(ann);
+        self.ann_segments = ann.covered_segments().min(self.segments.len());
+        self.ann = Some(Arc::new(ann));
+    }
+
+    /// How many leading segments the ANN graph covers; the rest were appended
+    /// after it was built and need exact scoring.
+    pub fn ann_segments(&self) -> usize {
+        self.ann_segments
     }
 
     /// Whether the ANN graph should be lazy (no RAM vector copy). Set before
@@ -267,6 +293,15 @@ impl Index {
     /// brute force) when there are fewer than `ANN_MIN` vectors — below that, exact
     /// cosine is both faster and strictly better than an approximation.
     pub fn build_ann(&mut self) {
+        self.ann = self.build_ann_graph();
+        self.ann_segments = self.segments.len();
+    }
+
+    /// Build the HNSW graph **without** installing it. This is the expensive part
+    /// of `build_ann` (it re-materializes every passage vector), split out so the
+    /// background refresher can do it off a read-only snapshot, outside any lock,
+    /// and publish the result with `with_ann`.
+    pub fn build_ann_graph(&self) -> Option<Arc<crate::hnsw::Hnsw>> {
         const ANN_MIN: usize = 64;
         // One graph node per *passage*, tagged with its doc address + passage index
         // (grouped by doc so a lazy reload can cache per-doc decodes).
@@ -281,8 +316,13 @@ impl Index {
             }
         }
         let keep_ram = !self.ann_lazy;
-        self.ann = (items.len() >= ANN_MIN)
-            .then(|| crate::hnsw::Hnsw::build(items, crate::hnsw::Params::default(), keep_ram));
+        (items.len() >= ANN_MIN).then(|| {
+            Arc::new(crate::hnsw::Hnsw::build(
+                items,
+                crate::hnsw::Params::default(),
+                keep_ram,
+            ))
+        })
     }
 
     /// Embed every live document missing a vector. Only **in-memory** segments
@@ -458,11 +498,57 @@ impl Index {
             writable: None,
             url_to_addr: HashMap::new(),
             embedder: self.embedder.clone(),
-            ann: None,
+            // Share the existing graph — do NOT rebuild it here. Appending never
+            // renumbers an existing address, so the old graph stays valid; it just
+            // doesn't know the new docs yet, and they remain findable lexically
+            // until `spawn_ann_refresher` rebuilds off-thread.
+            //
+            // Rebuilding inline used to cost a full HNSW build (every passage
+            // vector re-materialized) *per ingested page*, inside the request
+            // thread, with no concurrency limit — which is how a browsing session's
+            // auto-ingests turned into 140 concurrent rebuilds and 30 GB of RSS.
+            ann: self.ann.clone(),
+            // Coverage does *not* grow: the appended segments aren't in the graph.
+            // Semantic retrieval scores them exactly until the refresher catches up.
+            ann_segments: self.ann_segments,
             ann_lazy: self.ann_lazy,
         };
         idx.rebuild_url_map();
-        idx.build_ann();
+        idx
+    }
+
+    /// Whether `self` is `base` plus zero or more **appended** segments — i.e. the
+    /// two share a common segment prefix by identity. When true, any address valid
+    /// in `base` is still valid in `self`, so an ANN graph built against `base` can
+    /// be installed on `self` (`with_ann`). A merge renumbers addresses and breaks
+    /// this, which is exactly what it's here to detect.
+    pub fn extends(&self, base: &Index) -> bool {
+        self.segments.len() >= base.segments.len()
+            && base
+                .segments
+                .iter()
+                .zip(&self.segments)
+                .all(|(a, b)| Arc::ptr_eq(a, b))
+    }
+
+    /// A cheap derived index with `ann` swapped in: segments are shared via `Arc`
+    /// and only the url map is rebuilt. Used by the background ANN refresher to
+    /// publish a freshly built graph without disturbing in-flight readers.
+    ///
+    /// `covers` is how many leading segments the graph was built over — the
+    /// refresher builds off an older snapshot, so this is that snapshot's segment
+    /// count, not necessarily `self`'s.
+    pub fn with_ann(&self, ann: Option<Arc<crate::hnsw::Hnsw>>, covers: usize) -> Index {
+        let mut idx = Index {
+            segments: self.segments.clone(),
+            writable: None,
+            url_to_addr: HashMap::new(),
+            embedder: self.embedder.clone(),
+            ann,
+            ann_segments: covers.min(self.segments.len()),
+            ann_lazy: self.ann_lazy,
+        };
+        idx.rebuild_url_map();
         idx
     }
 
@@ -525,6 +611,7 @@ impl Index {
             url_to_addr: HashMap::new(),
             embedder: self.embedder.clone(),
             ann: None,
+            ann_segments: 0,
             ann_lazy: self.ann_lazy,
         };
         idx.rebuild_url_map();
@@ -712,6 +799,131 @@ mod tests {
                 assert!((x.score - y.score).abs() < 1e-9, "score for {q:?}");
             }
         }
+    }
+
+    /// A restart must not lose the distinction between "in the graph" and "appended
+    /// after it". Both the index and the (older) graph are persisted on every
+    /// ingest, so on load the graph legitimately covers fewer segments than exist —
+    /// assuming otherwise makes freshly ingested pages semantically invisible until
+    /// the next rebuild.
+    #[test]
+    fn loaded_ann_coverage_comes_from_the_graph_not_the_segment_count() {
+        let mut base = Index::new();
+        for i in 0..80 {
+            base.add_document(format!("u{i}"), format!("Doc {i}"), "rust ownership");
+        }
+        base.set_embedder(crate::embed::EmbedderConfig {
+            kind: crate::embed::KIND_HASH,
+            dim: 32,
+            url: String::new(),
+            model: String::new(),
+        });
+        base.embed_missing(&crate::embed::Embedder::Hash { dim: 32 });
+        base.build_ann();
+        let graph = base.build_ann_graph().expect("graph over 80 docs");
+
+        // Stand in for a reload: an index with an extra appended segment, handed the
+        // graph that predates it.
+        let mut staged = Index::new();
+        staged.add_document("new".into(), "New".into(), "go channels");
+        staged.set_embedder(base.embedder().clone());
+        staged.embed_missing(&crate::embed::Embedder::Hash { dim: 32 });
+        let mut reloaded = base.with_appended(&staged);
+        assert_eq!(reloaded.segment_count(), 2);
+
+        let Ok(graph) = Arc::try_unwrap(graph) else {
+            unreachable!("sole owner")
+        };
+        reloaded.set_ann(graph);
+        assert_eq!(
+            reloaded.ann_segments(),
+            1,
+            "coverage must come from the graph's own addresses, not segment_count()"
+        );
+        assert!(
+            query::search(&reloaded, "channels", 10)
+                .iter()
+                .any(|r| r.url == "new"),
+            "a doc outside the loaded graph's coverage must still be retrievable"
+        );
+    }
+
+    /// `with_appended` must not rebuild the ANN — that inline rebuild, once per
+    /// ingested page and unbounded in parallelism, is what melted the server. It
+    /// hands the existing graph to the appended index instead, which is only sound
+    /// because appending never renumbers an address.
+    #[test]
+    fn with_appended_shares_the_ann_instead_of_rebuilding() {
+        let mut base = Index::new();
+        for i in 0..80 {
+            base.add_document(format!("u{i}"), format!("Doc {i}"), "rust ownership");
+        }
+        base.set_embedder(crate::embed::EmbedderConfig {
+            kind: crate::embed::KIND_HASH,
+            dim: 32,
+            url: String::new(),
+            model: String::new(),
+        });
+        base.embed_missing(&crate::embed::Embedder::Hash { dim: 32 });
+        base.build_ann();
+        let before = base.ann().expect("80 docs is over ANN_MIN").len();
+
+        // The ingest path embeds staged docs before appending, so mirror that.
+        let mut staged = Index::new();
+        staged.add_document("new".into(), "New".into(), "go channels");
+        staged.set_embedder(base.embedder().clone());
+        staged.embed_missing(&crate::embed::Embedder::Hash { dim: 32 });
+
+        let grown = base.with_appended(&staged);
+
+        // Same graph object, not a rebuild: identical size, and the new segment is
+        // present but not yet represented in it.
+        let after = grown.ann().expect("graph carried over").len();
+        assert_eq!(before, after, "ANN was rebuilt during append");
+        assert_eq!(grown.segment_count(), base.segment_count() + 1);
+        assert_eq!(
+            grown.ann_segments(),
+            base.segment_count(),
+            "coverage must not claim the appended segment"
+        );
+        // The appended doc is still findable — lexically, and via the exact
+        // fallback — which is what makes the deferred rebuild acceptable.
+        // ...and it is still retrievable, because segments outside the graph's
+        // coverage are scored exactly rather than skipped.
+        for q in ["channels", "go channels", "goroutines channels"] {
+            assert!(
+                query::search(&grown, q, 10).iter().any(|r| r.url == "new"),
+                "appended doc must stay findable for {q:?} before the ANN catches up"
+            );
+        }
+    }
+
+    /// `extends` is the guard that decides whether a graph built off an older
+    /// snapshot may still be installed. It must say yes to an append and no to a
+    /// merge, because a merge renumbers every address.
+    #[test]
+    fn extends_accepts_appends_and_rejects_merges() {
+        let mut base = Index::new();
+        base.add_document("a".into(), "Rust".into(), "rust ownership");
+        base.begin_segment();
+        base.add_document("b".into(), "Go".into(), "go channels");
+
+        let mut staged = Index::new();
+        staged.add_document("c".into(), "C".into(), "c pointers");
+
+        let appended = base.with_appended(&staged);
+        assert!(appended.extends(&base), "append keeps existing addresses");
+        assert!(base.extends(&base), "an index extends itself");
+        assert!(
+            !base.extends(&appended),
+            "the shorter index does not extend the longer one"
+        );
+
+        let merged = base.merged_view(&[0, 1]);
+        assert!(
+            !merged.extends(&base),
+            "a merge moves addresses, so a stale graph must be rejected"
+        );
     }
 
     #[test]

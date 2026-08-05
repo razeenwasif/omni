@@ -168,6 +168,22 @@ impl Hnsw {
         h
     }
 
+    /// How many leading segments this graph holds nodes in — `max(segment) + 1`
+    /// over its addresses. Used on load to establish what a persisted graph really
+    /// covers: it can predate segments appended by `/ingest` since those append
+    /// without rebuilding it, and anything beyond the coverage must be scored
+    /// exactly instead of being assumed present in the graph.
+    ///
+    /// Under-reporting is safe — a segment whose documents are all unembedded
+    /// contributes no nodes, and scanning it exactly merely costs a little work.
+    pub fn covered_segments(&self) -> usize {
+        self.addrs
+            .iter()
+            .map(|&(seg, _)| seg + 1)
+            .max()
+            .unwrap_or(0)
+    }
+
     /// True if this graph reads vectors lazily (no in-RAM copy) — search then
     /// requires a `Fetch`.
     pub fn is_lazy(&self) -> bool {

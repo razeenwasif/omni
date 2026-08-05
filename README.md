@@ -61,6 +61,29 @@ WSL — two things make it reachable, exactly like a WSL-hosted Ollama:
   inside WSL, the script also writes the Windows `%APPDATA%` copy (via
   `cmd.exe`/`wslpath`) — that's where the Windows build actually reads.
 
+## Status: Phase 59 (ingest no longer rebuilds the ANN inline) ✅
+
+`POST /ingest` used to rebuild the whole HNSW graph inside the request thread, once
+per ingested page, with nothing bounding how many ran at a time. Flux's auto-ingest
+posts every page it loads and gives up after 8s, so a browsing session left dozens of
+rebuilds running against a corpus none of them would ever return to a caller: in one
+session, 140 spinning threads, every core pinned, and ~30 GB RSS before the OOM
+killer took it.
+
+Ingest now **appends and shares** the existing graph — appending never renumbers a
+`(segment, local)` address, so the old graph stays valid, just blind to the new docs.
+`Index::ann_segments` records how many leading segments it covers, and semantic
+retrieval scores anything past that boundary exactly, so a page is findable the
+moment it lands. A background refresher rebuilds the graph once ingests have been
+quiet for 30s, coalescing a whole browsing session into one rebuild.
+
+Alongside it: an `IngestGate` serializes publishes (concurrent `commit`s could
+silently drop each other's documents), `Content-Length` is capped at 32 MB before the
+body is allocated, and accepted sockets get read/write timeouts so a stalled peer
+can't pin a connection thread forever. A/B against the same 60-request burst on a
+12 000-vector index: 906 MB / 62 threads / 60 spinning → **102 MB / 3 threads / 0
+spinning**, with all 30 ingested docs retrievable, including across a restart.
+
 ## Status: Phase 58 (eval JSON reports) ✅
 
 `scripts/eval.py` now supports `--json [path|-]` for machine-readable ranking

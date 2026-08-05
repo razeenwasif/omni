@@ -1296,14 +1296,37 @@ fn semantic_ranking(
             let raw = ann.search(qv, ef, pool * crate::passages::MAX_PASSAGES, Some(&fetch));
             if !raw.is_empty() {
                 let mut seen: HashSet<Addr> = HashSet::new();
-                let mut docs: Vec<Addr> = Vec::new();
-                for (addr, _sim) in raw {
+                let mut docs: Vec<(Addr, f32)> = Vec::new();
+                for (addr, sim) in raw {
                     if seen.insert(addr) {
-                        docs.push(addr);
+                        docs.push((addr, sim));
                     }
                 }
+                // Segments appended since the graph was built aren't in it — an
+                // `/ingest` shares the existing graph rather than rebuilding it
+                // (`Index::with_appended`), so the *newest* documents live in this
+                // tail. Score them exactly and merge on the same cosine scale, or a
+                // freshly ingested page would be semantically invisible until the
+                // background refresher runs. The tail only holds what arrived since
+                // the last rebuild, so the extra scan stays cheap.
+                let segs = index.segments();
+                for (si, seg) in segs.iter().enumerate().skip(index.ann_segments()) {
+                    for local in 0..seg.total_docs() {
+                        if seg.is_live(local) && seg.docs[local].emb_len > 0 {
+                            let best = seg
+                                .passages(local)
+                                .iter()
+                                .map(|p| embed::cosine(qv, p))
+                                .fold(f32::NEG_INFINITY, f32::max);
+                            if best.is_finite() {
+                                docs.push(((si, local), best));
+                            }
+                        }
+                    }
+                }
+                docs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                 docs.truncate(pool);
-                return Some(docs);
+                return Some(docs.into_iter().map(|(a, _)| a).collect());
             }
         }
     }

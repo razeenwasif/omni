@@ -20,7 +20,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const IMAGES_PER_RESULT: usize = 4;
 
@@ -52,7 +52,9 @@ pub fn serve(
     dir: Option<PathBuf>,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr)?;
+    let ann_dir = dir.clone();
     let dir = dir.map(Arc::new);
+    let gate = Arc::new(crate::live::IngestGate::new());
     // Build the omnibox autocomplete dictionary once from the indexed titles. A
     // background merge never adds/removes live docs, so this stays valid across
     // swaps and needn't be rebuilt.
@@ -77,8 +79,17 @@ pub fn serve(
             cfg.interval.as_secs(),
             cfg.merge_factor
         );
-        crate::live::spawn_background_merger(Arc::clone(&live), cfg);
+        crate::live::spawn_background_merger(Arc::clone(&live), cfg, Arc::clone(&gate));
     }
+
+    // Ingested docs join the ANN graph here rather than inline in the request, so
+    // a burst of page ingests costs one rebuild after things settle, not one each.
+    crate::live::spawn_ann_refresher(
+        Arc::clone(&live),
+        Arc::clone(&gate),
+        crate::live::ANN_QUIET,
+        ann_dir,
+    );
 
     for stream in listener.incoming() {
         match stream {
@@ -87,9 +98,10 @@ pub fn serve(
                 let sug = Arc::clone(&suggester);
                 let tel = Arc::clone(&telemetry);
                 let dir = dir.clone();
+                let gate = Arc::clone(&gate);
                 // One thread per connection keeps Phase 1 simple and dependency-free.
                 std::thread::spawn(move || {
-                    let _ = handle(s, live, sug, tel, dir);
+                    let _ = handle(s, live, sug, tel, dir, gate);
                 });
             }
             Err(e) => eprintln!("omni: accept error: {e}"),
@@ -98,13 +110,26 @@ pub fn serve(
     Ok(())
 }
 
+/// Largest request body accepted on `/ingest`. `Content-Length` is client-supplied
+/// and the body is allocated up front, so without a ceiling one header line can ask
+/// the server to reserve arbitrary memory.
+const MAX_BODY: usize = 32 * 1024 * 1024;
+
+/// A connection that goes quiet mid-request must not pin its thread forever — one
+/// thread per connection means a stalled peer is a leaked thread. Generous enough
+/// not to interfere with SSE token writes on `/answer`.
+const IO_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn handle(
     mut stream: TcpStream,
     live: Arc<LiveIndex>,
     suggester: Arc<Suggester>,
     telemetry: Arc<Telemetry>,
     dir: Option<Arc<PathBuf>>,
+    gate: Arc<crate::live::IngestGate>,
 ) -> std::io::Result<()> {
+    let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
     let mut reader = BufReader::new(&stream);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -146,6 +171,15 @@ fn handle(
     }
 
     let reply = if method == "POST" && route_path == "/ingest" {
+        if content_length > MAX_BODY {
+            return write_reply(
+                &mut stream,
+                json(
+                    "413 Payload Too Large",
+                    format!("{{\"error\":\"body exceeds {MAX_BODY} bytes\"}}"),
+                ),
+            );
+        }
         let mut body = vec![0u8; content_length];
         if content_length > 0 {
             reader.read_exact(&mut body)?;
@@ -155,7 +189,13 @@ fn handle(
             .as_deref()
             .is_some_and(|v| matches!(v, "1" | "true" | "yes"));
         let dpath = dir.as_ref().map(|p| p.as_path());
-        ingest_reply(&live, dpath, &String::from_utf8_lossy(&body), dry_run)
+        ingest_reply(
+            &live,
+            dpath,
+            &String::from_utf8_lossy(&body),
+            dry_run,
+            &gate,
+        )
     } else {
         // Cheap snapshot for this request; a concurrent background swap won't
         // disturb it.
@@ -238,8 +278,14 @@ fn route(path: &str, index: &Index, suggester: &Suggester, telemetry: &Telemetry
         // Semantic graph of the index for the dashboard's graph view (Flux #119):
         // top-N docs by PageRank as nodes, edges = top-k cosine neighbours among them.
         "/graph" => {
-            let n = query_param(query_str, "n").and_then(|v| v.parse().ok()).unwrap_or(300usize).clamp(1, 1500);
-            let k = query_param(query_str, "k").and_then(|v| v.parse().ok()).unwrap_or(6usize).clamp(1, 16);
+            let n = query_param(query_str, "n")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300usize)
+                .clamp(1, 1500);
+            let k = query_param(query_str, "k")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(6usize)
+                .clamp(1, 16);
             json("200 OK", graph_json(index, n, k))
         }
         "/sites" => json("200 OK", sites_json()),
@@ -299,7 +345,13 @@ fn ingest_reply(
     dir: Option<&std::path::Path>,
     body: &str,
     dry_run: bool,
+    gate: &crate::live::IngestGate,
 ) -> Reply {
+    // Serialize the whole snapshot → append → commit section. Ingests arrive in
+    // bursts (the browser posts every page it loads), and running them in parallel
+    // both duplicates the work and loses updates — see `IngestGate`. A dry run
+    // publishes nothing, so it needs no lock.
+    let _publishing = (!dry_run).then(|| gate.publishing());
     let snap = live.snapshot();
     // Two accepted formats: JSON `{url,title,text}` (or an array) — what the Flux
     // browser POSTs for the page it's viewing — or the doc-store text format.
@@ -357,6 +409,9 @@ fn ingest_reply(
         }
         let next = snap.with_appended(&staging);
         crate::live::commit(live, next, dir);
+        // The appended docs aren't in the ANN graph yet (the append shares the old
+        // one). Arm the background refresher; it rebuilds once ingests go quiet.
+        gate.touch();
         println!("omni: ingested {added} doc(s) ({skipped} skipped) — live swap");
     } else if dry_run {
         println!("omni: ingest dry-run — would add {added} doc(s) ({skipped} skipped)");
@@ -613,20 +668,25 @@ fn graph_json(index: &Index, n_nodes: usize, k_edges: usize) -> String {
     let reps: Vec<Option<Vec<f32>>> = ranked
         .iter()
         .map(|&(_, si, local)| {
-            index.segments()[si].passages(local).into_iter().next().map(|mut v| {
-                let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-                if norm > 0.0 {
-                    for x in &mut v {
-                        *x /= norm;
+            index.segments()[si]
+                .passages(local)
+                .into_iter()
+                .next()
+                .map(|mut v| {
+                    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                    if norm > 0.0 {
+                        for x in &mut v {
+                            *x /= norm;
+                        }
                     }
-                }
-                v
-            })
+                    v
+                })
         })
         .collect();
 
     const MIN_SIM: f32 = 0.5; // below this, two docs aren't meaningfully related
-    let mut edge_w: std::collections::HashMap<(usize, usize), f32> = std::collections::HashMap::new();
+    let mut edge_w: std::collections::HashMap<(usize, usize), f32> =
+        std::collections::HashMap::new();
     for i in 0..ranked.len() {
         let Some(vi) = &reps[i] else { continue };
         let mut sims: Vec<(usize, f32)> = Vec::new();
@@ -657,14 +717,22 @@ fn graph_json(index: &Index, n_nodes: usize, k_edges: usize) -> String {
         .iter()
         .map(|&(rank, si, local)| {
             let d = &index.segments()[si].docs[local];
-            format!("{{\"title\":{},\"url\":{},\"rank\":{rank:.6}}}", json_string(&d.title), json_string(&d.url))
+            format!(
+                "{{\"title\":{},\"url\":{},\"rank\":{rank:.6}}}",
+                json_string(&d.title),
+                json_string(&d.url)
+            )
         })
         .collect();
     let edges: Vec<String> = edge_w
         .iter()
         .map(|(&(a, b), &w)| format!("{{\"s\":{a},\"t\":{b},\"w\":{w:.4}}}"))
         .collect();
-    format!("{{\"nodes\":[{}],\"edges\":[{}]}}", nodes.join(","), edges.join(","))
+    format!(
+        "{{\"nodes\":[{}],\"edges\":[{}]}}",
+        nodes.join(","),
+        edges.join(",")
+    )
 }
 
 /// Parse retrieval tuning from the query string: `lex` (lexical-only),
@@ -1493,7 +1561,7 @@ mod tests {
                     \n\
                     rust ownership guide";
 
-        let reply = ingest_reply(&live, None, body, true);
+        let reply = ingest_reply(&live, None, body, true, &crate::live::IngestGate::new());
         let Reply::Page { status, body, .. } = reply else {
             panic!("ingest should return JSON page");
         };
